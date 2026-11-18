@@ -78,7 +78,7 @@ tiering:
   # (:46) — every roster agent here is flue, so every role is routable by
   # these rungs. Stated explicitly rather than left to the default, because
   # it is the field that keeps a rung from being handed to a backend that
-  # cannot parse it (rule T — see assets/skill/references/config.md's
+  # cannot parse it (rule T — see assets/skills/piquette/references/config.md's
   # "tiering" section).
   tiers:
     - { name: scout,   coding_agent: flue, model: ollama/granite4.1:8b }    # cheap read/summarize/triage

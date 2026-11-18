@@ -80,16 +80,18 @@ test("never writes .env or .env.example on the non-interactive paths", async () 
   assert.equal(existsSync(join(dir, ".env.example")), false);
 });
 
-test("also installs the repo-local Claude Code skill by default, on every non-interactive path", async () => {
+test("also installs the repo-local agent skills (.claude + .agents) by default, on every non-interactive path", async () => {
   const code = await initCommand(["--cwd", dir, "--yes"]);
   assert.equal(code, 0);
   assert.ok(existsSync(join(dir, ".claude", "skills", "piquette", "SKILL.md")), "piquette init should install the skill unless --no-skills is passed");
+  assert.ok(existsSync(join(dir, ".agents", "skills", "piquette", "SKILL.md")), "and the open Agent Skills layout too");
 });
 
 test("--no-skills skips the skill install", async () => {
   const code = await initCommand(["--cwd", dir, "--yes", "--no-skills"]);
   assert.equal(code, 0);
   assert.equal(existsSync(join(dir, ".claude", "skills", "piquette")), false);
+  assert.equal(existsSync(join(dir, ".agents", "skills", "piquette")), false);
 });
 
 test("scaffolds .piquette/chains/example.yaml, fully commented out (registers nothing)", async () => {

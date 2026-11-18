@@ -8,30 +8,27 @@ owns the sequencing and gates, coding agents are bounded steps inside it.
 
 Rules for you:
 
+- **piquette carries its own instructions.** After installing it (section 1),
+  read them from the CLI, with nothing installed in this repo yet:
+  `piquette skill show piquette-setup` (and `piquette skill list` for the
+  rest). The skills are authoritative. Where this file and a skill differ,
+  follow the skill.
 - Do the sections in order. Each ends with a **Gate**. Run the gate command and
   read the output; do not continue on a failure and do not assume success.
 - Never invent a flag. If unsure, run `piquette --help` or `piquette list`.
-- Never write secrets into committed files. API keys and tokens go in `.env`
-  at the repo root, which every piquette command auto-loads and which `piquette init`
-  adds to `.gitignore`. Ask the human for them; do not guess or reuse keys
-  from elsewhere.
+- **Secrets never pass through you.** API keys and tokens go in `.env` at the
+  repo root (gitignored, auto-loaded by every piquette command), and the human
+  types them there. Never ask for a value in chat, never write one yourself.
+  `piquette init --answers` rejects secrets outright, and `piquette doctor`
+  confirms a key is present without reading it.
 - Ask the human before anything that costs money (real chain runs) or touches
-  a remote (`piquette watch`, which labels issues and opens PRs).
-- If you are Claude Code: after section 1, run `piquette install-skill` (or
-  `piquette init`, which does it) and defer to the installed skill
-  (`.claude/skills/piquette/SKILL.md`; read the file directly if this session
-  does not list the skill yet) for how to orchestrate piquette. Do not re-derive
-  orchestration rules from this file.
+  a remote (`piquette watch init`, `piquette watch`, a commit or push).
 
-Canonical docs (reference only; nothing below depends on you being able to read
-them). Paths like `assets/skill/references/config.md` below are relative to
-any of:
-
-- the piquette repo: https://github.com/piquette-ai/engine
-- the installed package: `$(npm root -g)/@piquette/engine/` (README.md, `assets/`)
-- after `piquette init` or `piquette install-skill`, this repo's `.claude/skills/piquette/`,
-  which holds a copy of `assets/skill/` (so `references/config.md`,
-  `cookbooks/authoring_chains.md`, ... without the `assets/skill/` prefix)
+Canonical docs, for reference: the README and `assets/` in the installed
+package (`$(npm root -g)/@piquette/engine/`), or
+https://github.com/piquette-ai/engine. Every skill file is also readable with
+`piquette skill show <skill> --file <path>`, for example
+`piquette skill show piquette --file references/config.md`.
 
 ---
 
@@ -72,138 +69,33 @@ at this point (see the table); section 2 clears them.
 
 ---
 
-## 2. Interview the user, then configure
-
-Ask these questions in conversation (batch them). They mirror what `piquette init`
-asks on a terminal.
-
-1. **Coding agent backend.** `claude_code` (shells out to the `claude` CLI),
-   `flue` (piquette's own runtime; many model providers, incl. local Ollama and
-   Cloudflare Workers AI), or `opencode`. The packaged default roster is `flue`.
-2. **Model(s).** One model for the whole roster, or a different one per agent
-   (`planner`, `builder`, `scout`, `refiner`, `reviewer`, `documenter`). For
-   flue and opencode, models are `provider/model-id` (e.g.
-   `google/gemini-3.6-flash`, `ollama/<tag>`); for `claude_code`, a Claude
-   Code alias (`sonnet`, `opus`, ...). Ask which provider keys they have. The
-   flue provider prefix decides the `.env` key: `anthropic` →
-   `ANTHROPIC_API_KEY`, `openai` → `OPENAI_API_KEY`, `google` →
-   `GEMINI_API_KEY`, `openrouter` → `OPENROUTER_API_KEY`, `fireworks` →
-   `FIREWORKS_API_KEY` (also `groq`, `mistral`, `xai`, `deepseek`,
-   `together`, `cerebras` as `<NAME>_API_KEY`), `cloudflare` →
-   `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`. `ollama` needs no key
-   (set `OLLAMA_BASE_URL` if the server is not local).
-3. **Quality commands.** What proves a change is good: test, lint, typecheck,
-   build. Inspect the repo (`package.json` scripts, Makefile, CI config),
-   propose, then confirm. No quality checks ship by default, and chains that
-   need one fail loudly until you add some.
-4. **`piquette watch`.** Should piquette poll an issue tracker for `piquette:ready` issues and
-   open PRs automatically? If yes: tracker (`github`, `github-projects`, or
-   `jira`), code host (`github` or `bitbucket`), and the `owner/name` repo.
-   Optional; skip it for a first setup.
-5. **Notifications.** Push run results to Slack, Teams, or a webhook? Optional.
-
-### Apply the answers
-
-`piquette init --answers <file>`, which would take these answers non-interactively,
-is upcoming (issue #43) and does not exist yet. Until then use the fallback:
+## 2. Set up the repo (the piquette-setup skill)
 
 ```bash
-piquette init --yes                      # non-interactive: commented, all-defaults starter .piquette/piquette.config.yaml
-# or start from the packaged template closest to the answers:
-piquette init --template <name>
+piquette skill show piquette-setup
 ```
 
-| Template | Backend and models |
-|---|---|
-| `ts` | `claude_code` on Anthropic (`sonnet`) |
-| `ts-cc` | `claude_code` pointed at Ollama via `ANTHROPIC_BASE_URL` |
-| `ts-opencode` | `opencode` CLI |
-| `ts-flue-ollama` | flue on a local Ollama server (tiering on) |
-| `ts-flue-openrouter` | flue through OpenRouter |
-| `ts-flue-cloudflare` | flue on Cloudflare Workers AI |
+Follow it. In short:
 
-All templates assume an npm TypeScript project (`npm test`, `npm run lint`,
-`npm run typecheck`, `npm run build`); fix the `quality.checks` argv to match
-the repo. `--yes` and `--template` skip the interview (so does a non-TTY
-stdin), scaffold `.piquette/chains/`, add `.piquette/data/`, `.piquette/engine/`, and `.env`
-to `.gitignore`, and install the Claude Code skill unless you pass
-`--no-skills`. If `.piquette/piquette.config.yaml` already exists, init leaves it
-alone unless you add `--force`; ask the human before overwriting. Then edit
-by hand:
+1. `piquette init --detect` shows the repo and what's already configured.
+2. Run the interview as a loop: `piquette init --answers '<json>'` returns
+   the next question (exit 3) until every answer is in, then writes
+   `.piquette/piquette.config.yaml` and installs the skills into
+   `.claude/skills/` and `.agents/skills/`.
+3. Work through the result's `next_steps`:
+   - the human adds the `.env` keys it names
+   - you run `piquette doctor --json`
+   - `piquette watch init` if watch is on (confirm first)
+   - commit `files_to_commit` (confirm first, never `.env`)
 
-- **`.piquette/piquette.config.yaml`**: write only what differs from the packaged
-  defaults. Sections merge key by key, `quality.checks` replaces the whole
-  list, and `agents` entries patch the packaged roster by `name`. **The
-  packaged roster pins `planner`, `reviewer`, and `documenter` to their own
-  models, and those pins win over `defaults.model`.** Whenever you change the
-  model or backend, set those three explicitly too, or they keep running the
-  packaged Fireworks/OpenAI models (and on `claude_code` they fail at the
-  first dispatch, which `piquette doctor` does not catch). Example for Claude
-  Code with one model everywhere:
+Don't hand-write the config, and don't run a bare `piquette init` to "get
+started". Without a terminal it writes an empty, comments-only starter.
+`--answers` replaces that starter without `--force`, if one is already
+there.
 
-  ```yaml
-  defaults:
-    coding_agent: claude_code
-    model: sonnet
-  agents:
-    - {name: planner, model: sonnet}
-    - {name: reviewer, model: sonnet}
-    - {name: documenter, model: sonnet}
-  quality:
-    checks:
-      - {name: test, operation: build, argv: ["npm", "test"], timeout_seconds: 600}
-      - {name: lint, operation: lint, argv: ["npx", "eslint", "."], timeout_seconds: 120}
-    suites:
-      test: [test]
-      all: [test, lint]
-  ```
-
-  `operation` is one of `lint`, `typecheck`, `build` (use `build` for
-  tests). The `test` suite is what `plan-build-test` and `build-test` run;
-  `all` is what `plan-build-test-quality` and `quality` run.
-
-  Only if they said yes to watch:
-
-  ```yaml
-  watch:
-    issue_provider: github
-    code_host: github
-    repo: owner/name
-    chain: plan-build-test
-  ```
-
-  Jira also needs a `watch.jira` block (`base_url`, `project_key`), and a
-  Bitbucket `repo` is `workspace/repo_slug`; see config.md's "watch" table.
-
-  Only if they want notifications (the URL itself is a secret and goes in
-  `.env`, never in this file):
-
-  ```yaml
-  notifications:
-    events: attention          # off | errors | attention | all
-    channels:
-      - kind: slack            # slack | teams | webhook
-        webhook_url_env: SLACK_WEBHOOK_URL   # TEAMS_WEBHOOK_URL / PIQUETTE_WEBHOOK_URL for the others
-  ```
-
-- **`.env`**: provider keys and tokens, e.g. `FIREWORKS_API_KEY=...`.
-  For watch: `GITHUB_TOKEN=...` (classic PAT, `repo` scope, `public_repo` for
-  a public-only repo, plus `project` for `github-projects`), or
-  `JIRA_EMAIL`/`JIRA_API_TOKEN`, or `BITBUCKET_EMAIL`/`BITBUCKET_API_TOKEN`.
-  Ask the human for each secret, and mirror the key *names* (not values) into
-  a committable `.env.example` (non-interactive init does not write one).
-- If they chose watch: `piquette watch init` (idempotent; seeds the `piquette:*` labels),
-  then confirm `piquette doctor` shows the watch lines green.
-
-Full field reference: `assets/skill/references/config.md` (see the doc
-locations at the top).
-
-**Gate:** `piquette doctor` exits 0, or every remaining `✗` is something the
-human explicitly chose not to use. It must show `quality suite "test"` (and
-`quality suite "all"` if they want `plan-build-test-quality`), because
-`piquette doctor` does not flag a chain whose suite is missing; that chain just
-refuses to start. Show the human the final `.piquette/piquette.config.yaml` and get a
-yes before committing it.
+**Gate:** `piquette doctor --json` reports `"ok": true`, or every remaining
+failing check is something only the human can resolve (a key in `.env`, a
+tool to install). If so, list those for the human plainly.
 
 ---
 
@@ -284,14 +176,14 @@ Pointers only. Read the canonical doc before changing anything non-trivial.
   commit, external CLIs). It then appears in `piquette list` and runs as
   `piquette <name> "<prompt>"`. `piquette init` scaffolds two fully commented-out
   examples, `.piquette/chains/example.yaml` and `.piquette/chains/review-fix.yaml`.
-  See `assets/skill/cookbooks/authoring_chains.md`.
+  See `assets/skills/piquette-author/cookbooks/authoring_chains.md`.
 - **Roster and prompt overrides.** Each agent in the roster has a model, tools,
   and write permissions (patch them under `agents:` by `name`), and a
   system/user prompt pair that a repo overrides by placing files under
   `.piquette/prompt_engineering/<agent>/` (start from the packaged ones in
   `assets/prompts/<agent>/`). `piquette eject` copies the compiled engine out for
   reading; it has no config surface and is not how you customize. See
-  `assets/skill/cookbooks/roster.md` and `assets/skill/references/config.md`.
+  `assets/skills/piquette-author/cookbooks/roster.md` and `assets/skills/piquette/references/config.md`.
 - **Templates.** `piquette init --template <name>` seeds a filled-in config for common
   setups (Claude Code, opencode, flue with Ollama/OpenRouter/Cloudflare). Browse
   `assets/templates/` for the exact files.

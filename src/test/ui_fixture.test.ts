@@ -2,7 +2,7 @@
  * core/ui_fixture.ts (#4): the loopback fixture server and the agent-browser
  * session wrapper that a repo-level proof script composes to drive real
  * client JS outside the app it ships in. See
- * assets/skill/cookbooks/authoring_proof_scripts.md for the worked example
+ * assets/skills/piquette-author/cookbooks/authoring_proof_scripts.md for the worked example
  * this exists to support.
  */
 import assert from "node:assert/strict";

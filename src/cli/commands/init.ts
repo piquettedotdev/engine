@@ -19,7 +19,8 @@
  * `~/.claude/skills/piquette` instead) stays a `piquette install-skill` invocation of
  * its own; `init` only ever writes the repo-local default.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import * as paths from "../../core/paths.ts";
@@ -28,9 +29,11 @@ import { ensureGitignore } from "../gitignore.ts";
 import { parseCli } from "../../core/utils.ts";
 import { paint } from "../../core/console.ts";
 import { createAsker, inkAvailable, isInteractive, InterviewAborted } from "../ask.ts";
-import { BLOCK_KEYS, gatherContext, INTERVIEW_BLOCKS, runInterview, type InterviewBlock } from "../interview.ts";
+import { BLOCK_KEYS, gatherContext, INTERVIEW_BLOCKS, runInterview, type InterviewBlock, type InterviewResult } from "../interview.ts";
+import { createAnswersAsker, InvalidAnswer, NeedsAnswer, readAnswers, type AnswerValue } from "../answers_asker.ts";
 import { readEnvFile, upsertEnvFile, writeEnvExample } from "../env_file.ts";
-import { installSkillCommand } from "./install-skill.ts";
+import { installedSkillState, installSkillCommand, packagedSkills, SKILL_LAYOUTS } from "./install-skill.ts";
+import { redundantOverrides } from "../config_drift.ts";
 
 const TEMPLATE_SUFFIX = ".piquette.config.yaml";
 
@@ -156,7 +159,7 @@ const STARTER_CONFIG = `# .piquette/piquette.config.yaml — merged ON TOP of pi
 
 # Uncomment to change the human sign-off gate in front of simple-sdlc's
 # commit_build phase — the one place an AI reviewer's approved flag alone
-# can gate a commit. See assets/skill/references/config.md's "review"
+# can gate a commit. See assets/skills/piquette/references/config.md's "review"
 # section for the full behavior.
 # review:
 #   require_human_signoff: false   # true = an unattended simple-sdlc run fails closed instead of committing on the reviewer's verdict alone
@@ -168,7 +171,7 @@ const STARTER_CONFIG = `# .piquette/piquette.config.yaml — merged ON TOP of pi
 # entry names. \`piquette init --template ts-flue-ollama\` ships this ON with two
 # MEASURED local tags; this starter leaves it off and commented because no
 # tag below has been measured against YOUR roster. See
-# assets/skill/references/config.md's "tiering" section for the full
+# assets/skills/piquette/references/config.md's "tiering" section for the full
 # mechanism (the ladder walk, rule T, the availability probe) before turning
 # this on — \`piquette doctor\` checks these rungs the same way it checks
 # cfg.agents[].model, but ONLY once enabled: true.
@@ -215,7 +218,7 @@ export const EXAMPLE_CHAIN_YAML = `# .piquette/chains/example.yaml — a repo-lo
 # code from this repo. "Agent proposes, code disposes," and the code that
 # disposes is always PIQUETTE's own, packaged code; a chain file only ever picks
 # which of ITS steps run, in which order, with which params. See
-# .claude/skills/piquette/cookbooks/authoring_chains.md (installed by \`piquette init\`
+# .claude/skills/piquette-author/cookbooks/authoring_chains.md (installed by \`piquette init\`
 # into THIS repo) for the full step vocabulary — its "Repo-local chains"
 # section is written for exactly this file.
 #
@@ -357,35 +360,345 @@ function readEnvExampleKeys(repoRoot: string): string[] {
   return keys;
 }
 
-export async function initCommand(argv: string[]): Promise<number> {
-  const { options, flags } = parseCli(argv, ["cwd", "template"], ["force", "yes", "no-skills", "partial"]);
-  const anchor = paths.resolveAnchor(options["cwd"]);
-  const sfDir = path.join(anchor.repo_root, ".piquette");
-  mkdirSync(sfDir, { recursive: true });
+/**
+ * True when the config file has no settings at all — every line a comment, as
+ * the non-interactive `piquette init` starter writes it. Such a file configures
+ * nothing, so setup treats it as absent: `--detect` reports `config_empty`,
+ * and `--answers` / the interview replace it without needing --force.
+ */
+export function configIsEmpty(configPath: string): boolean {
+  if (!existsSync(configPath)) return true;
+  try {
+    const doc = parse(readFileSync(configPath, "utf-8")) as unknown;
+    return doc === null || doc === undefined || (typeof doc === "object" && !Array.isArray(doc) && Object.keys(doc as object).length === 0);
+  } catch {
+    return false; // unparseable is not "empty" — never silently replace a file someone was editing
+  }
+}
 
-  // Scaffold `.piquette/chains/` unconditionally, on every path below (interview
-  // or not) — same idempotent shape as installSkill(): never overwrites a
-  // file that's already there (an author may have started editing the
-  // example, or written their own chains alongside it), so this is always
-  // safe to run again on a repo that already has one.
+/**
+ * The shared setup a teammate needs, as repo-relative paths with uncommitted
+ * changes: the config, repo chains, `.env.example`, `.gitignore` and the
+ * installed skill folders. Asks git, so an already-committed, unchanged file
+ * isn't listed; outside a git repo it falls back to whichever exist. `.env`
+ * (secrets) is never included.
+ */
+export function filesToCommit(repoRoot: string): string[] {
+  const candidates = [".piquette/piquette.config.yaml", ".piquette/chains", ".env.example", ".gitignore", ...Object.values(SKILL_LAYOUTS)].filter((p) =>
+    existsSync(path.join(repoRoot, p)),
+  );
+  if (candidates.length === 0) return [];
+  const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=all", "--", ...candidates], { cwd: repoRoot, encoding: "utf-8" });
+  if (status.status !== 0) return candidates;
+  const changed = status.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.slice(3).replace(/^"|"$/g, ""))
+    .map((p) => (p.includes(" -> ") ? p.split(" -> ")[1] : p));
+  // Collapse per-file noise to the candidate it belongs to, so a skill folder reads as one entry, not forty.
+  const out = new Set<string>();
+  for (const p of changed) {
+    const owner = candidates.find((c) => p === c || p.startsWith(c + "/"));
+    if (owner) out.add(statSync(path.join(repoRoot, owner)).isDirectory() ? owner + "/" : owner);
+  }
+  return [...out].sort();
+}
+
+function packageVersion(): string {
+  return (JSON.parse(readFileSync(path.join(paths.PACKAGE_ROOT, "package.json"), "utf-8")) as { version: string }).version;
+}
+
+/** Run `fn` with console.log routed to stderr — keeps a `--json` command's stdout a single parseable document while reused code paths still print. */
+async function quietStdout<T>(fn: () => T | Promise<T>): Promise<T> {
+  const original = console.log;
+  console.log = (...args: unknown[]) => console.error(...args);
+  try {
+    return await fn();
+  } finally {
+    console.log = original;
+  }
+}
+
+/** Scaffolded unconditionally on every writing path — never overwrites a file already there (an author may have started editing the example). */
+function scaffoldChains(sfDir: string): void {
   const chainsDir = path.join(sfDir, "chains");
   mkdirSync(chainsDir, { recursive: true });
   const exampleChainPath = path.join(chainsDir, "example.yaml");
-  if (!existsSync(exampleChainPath)) {
-    writeFileSync(exampleChainPath, EXAMPLE_CHAIN_YAML);
-  }
+  if (!existsSync(exampleChainPath)) writeFileSync(exampleChainPath, EXAMPLE_CHAIN_YAML);
   const reviewFixChainPath = path.join(chainsDir, "review-fix.yaml");
-  if (!existsSync(reviewFixChainPath)) {
-    writeFileSync(reviewFixChainPath, EXAMPLE_REVIEW_FIX_CHAIN_YAML);
+  if (!existsSync(reviewFixChainPath)) writeFileSync(reviewFixChainPath, EXAMPLE_REVIEW_FIX_CHAIN_YAML);
+}
+
+/**
+ * The config a finished interview should leave on disk. A full run replaces the
+ * file; a partial run (`only` set) merges into `existing`: `defaults` is shared
+ * by two blocks (coding_agent, advanced) and runInterview already reconciled it
+ * (seeded from `existing`, each selected block setting or deleting only its own
+ * keys), so it's always the complete, correct replacement. Every other touched
+ * key is owned by exactly one block: set it when this run produced it, delete it
+ * when the block ran but decided against it (see runInterview's doc comment on
+ * `asks`/BLOCK_KEYS for why "ran but absent" must delete rather than leave the
+ * untouched merge default in place).
+ */
+function finalConfig(result: InterviewResult, partial?: { only: Set<InterviewBlock>; existing: Record<string, unknown> }): Record<string, unknown> {
+  if (!partial) return result.config;
+  const merged: Record<string, unknown> = { ...partial.existing, defaults: result.config.defaults };
+  if (!merged.defaults || Object.keys(merged.defaults as object).length === 0) delete merged.defaults;
+  for (const block of partial.only) {
+    for (const key of BLOCK_KEYS[block]) {
+      if (key in result.config) merged[key] = result.config[key];
+      else delete merged[key];
+    }
+  }
+  return merged;
+}
+
+/**
+ * Write a finished interview's config, `.env` entries and `.env.example` keys,
+ * then run the same merge-then-validate pipeline `piquette doctor` runs — which
+ * catches a bad answer (e.g. a suite naming an unconfigured check) right after
+ * writing, not at the first real chain run. Non-fatal: returns the validation
+ * problem (if any) rather than throwing; the config is already written either way.
+ * Shared by the terminal interview and `--answers`, so both write identically.
+ */
+function writeInterviewResult(
+  anchor: paths.RepoAnchor,
+  configPath: string,
+  result: InterviewResult,
+  partial?: { only: Set<InterviewBlock>; existing: Record<string, unknown> },
+): { config: Record<string, unknown>; envWritten: string[]; warning?: string } {
+  const config = finalConfig(result, partial);
+  writeFileSync(configPath, GENERATED_HEADER + stringify(config));
+  console.log(`wrote ${configPath}${partial ? ` (reconfigured: ${[...partial.only].join(", ")})` : ""}`);
+  const envWritten = Object.keys(result.env);
+  if (envWritten.length > 0) upsertEnvFile(anchor.repo_root, result.env);
+  if (partial) {
+    if (result.envExampleKeys.length > 0) {
+      writeEnvExample(anchor.repo_root, [...new Set([...readEnvExampleKeys(anchor.repo_root), ...result.envExampleKeys])]);
+    }
+  } else {
+    writeEnvExample(anchor.repo_root, result.envExampleKeys);
+  }
+  try {
+    const cfg = agents.loadConfig([paths.BUILTIN_CONFIG_PATH, configPath]);
+    agents.validate(cfg, cfg.agents.map((a) => a.name), Object.keys(cfg.quality.suites), anchor.cwd);
+    return { config, envWritten };
+  } catch (error) {
+    return { config, envWritten, warning: (error as Error).message };
+  }
+}
+
+/**
+ * `piquette init --detect --json` — everything the interview would detect, plus
+ * what's already configured, as one JSON document. Writes nothing. `.env` is
+ * reported by key NAME only — a value never reaches stdout.
+ */
+function detectCommand(anchor: paths.RepoAnchor): number {
+  const configPath = path.join(anchor.repo_root, ".piquette", "piquette.config.yaml");
+  const envPath = path.join(anchor.repo_root, ".env");
+  const ctx = gatherContext(anchor.repo_root, readEnvFile(envPath));
+  let existing: Record<string, unknown> | null = null;
+  let configError: string | undefined;
+  if (existsSync(configPath)) {
+    try {
+      existing = (parse(readFileSync(configPath, "utf-8")) ?? {}) as Record<string, unknown>;
+    } catch (error) {
+      configError = (error as Error).message;
+    }
+  }
+  const skills = packagedSkills();
+  const out = {
+    repo_root: anchor.repo_root,
+    piquette_dir: anchor.piquette_dir,
+    config_path: configPath,
+    config_exists: existsSync(configPath),
+    // A comments-only file (the non-interactive starter) configures nothing — setup may replace it without --force.
+    config_empty: existsSync(configPath) && configIsEmpty(configPath),
+    ...(configError ? { config_error: configError } : {}),
+    blocks: INTERVIEW_BLOCKS.map((block) => ({
+      block,
+      label: BLOCK_LABELS[block],
+      configured: existing ? blockConfigured(block, existing) : false,
+    })),
+    context: {
+      repo_slug: ctx.repoSlug ?? null,
+      current_branch: ctx.currentBranch,
+      git_name: ctx.gitName ?? null,
+      git_email: ctx.gitEmail ?? null,
+      scripts: ctx.scripts,
+      claude_on_path: ctx.claudeOnPath,
+      opencode_on_path: ctx.opencodeOnPath,
+      roster: ctx.rosterNames,
+      env_keys_present: [...ctx.existingEnv.keys()].sort(),
+      env_example_keys: readEnvExampleKeys(anchor.repo_root),
+    },
+    templates: listTemplates(),
+    ...(existing ? { redundant_overrides: redundantOverrides(existing) } : {}),
+    piquette_version: packageVersion(),
+    skills: {
+      packaged: skills,
+      // Per layout: every skill folder found there (packaged or not — a removed skill shows up here and not in `packaged`),
+      // with the piquette version that last installed it and any `.new` files from a conflicting upgrade still to merge.
+      installed: Object.fromEntries(
+        Object.entries(SKILL_LAYOUTS).map(([layout, rel]) => {
+          const root = path.join(anchor.repo_root, rel);
+          const names = existsSync(root) ? readdirSync(root).filter((n) => n.startsWith("piquette")) : [];
+          const state = names.flatMap((name) => {
+            const st = installedSkillState(path.join(root, name));
+            return st ? [{ name, ...st }] : [];
+          });
+          return [layout, state];
+        }),
+      ),
+    },
+  };
+  console.log(JSON.stringify(out, null, 2));
+  return 0;
+}
+
+/** `--only coding_agent,quality` -> a validated block set, or an error message. */
+function parseOnly(raw: string | undefined): Set<InterviewBlock> | string | undefined {
+  if (raw === undefined) return undefined;
+  const wanted = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const unknown = wanted.filter((w) => !(INTERVIEW_BLOCKS as string[]).includes(w));
+  if (unknown.length > 0 || wanted.length === 0) return `--only takes a comma-separated list of: ${INTERVIEW_BLOCKS.join(", ")} (got ${JSON.stringify(raw)})`;
+  return new Set(wanted as InterviewBlock[]);
+}
+
+/**
+ * `piquette init --answers <file|-|{json}> [--only <blocks>] [--accept-defaults] [--dry-run] [--force]`
+ *
+ * The agent-driven interview: runs the exact same `runInterview` flow through
+ * an answers-backed Asker (`../answers_asker.ts`). Always prints one JSON
+ * document. Exit codes: 0 written (or dry run complete), 3 a question still
+ * needs an answer (nothing written — add `question.key` and re-run), 1 an
+ * answer was invalid, the config already exists without --force, or a usage error.
+ */
+async function answersCommand(
+  anchor: paths.RepoAnchor,
+  options: Record<string, string>,
+  flags: Record<string, boolean>,
+  installSkill: () => void,
+): Promise<number> {
+  const emit = (doc: Record<string, unknown>, code: number): number => {
+    console.log(JSON.stringify(doc, null, 2));
+    return code;
+  };
+  const sfDir = path.join(anchor.repo_root, ".piquette");
+  const configPath = path.join(sfDir, "piquette.config.yaml");
+
+  const only = parseOnly(options["only"]);
+  if (typeof only === "string") return emit({ status: "error", error: only }, 1);
+  if (options["template"] || flags["yes"] || flags["partial"]) {
+    return emit({ status: "error", error: "--answers can't be combined with --template/--yes/--partial (use --only <blocks> to reconfigure part of an existing config)" }, 1);
+  }
+  let partial: { only: Set<InterviewBlock>; existing: Record<string, unknown> } | undefined;
+  if (only) {
+    if (!existsSync(configPath)) return emit({ status: "error", error: `${configPath} does not exist — run a full \`piquette init --answers\` first` }, 1);
+    partial = { only, existing: (parse(readFileSync(configPath, "utf-8")) ?? {}) as Record<string, unknown> };
+  } else if (existsSync(configPath) && !configIsEmpty(configPath) && !flags["force"] && !flags["dry-run"]) {
+    return emit({ status: "error", error: `${configPath} already exists — pass --force to replace it, or --only <blocks> to reconfigure part of it` }, 1);
   }
 
-  // Idempotent (a no-op once the skill is already up to date, a `.new`
+  let answers: Record<string, AnswerValue>;
+  try {
+    answers = readAnswers(options["answers"]);
+  } catch (error) {
+    return emit({ status: "error", error: `could not read --answers: ${(error as Error).message}` }, 1);
+  }
+
+  const asker = createAnswersAsker(answers, { acceptDefaults: flags["accept-defaults"] });
+  const ctx = gatherContext(anchor.repo_root, readEnvFile(path.join(anchor.repo_root, ".env")));
+  let result: InterviewResult | null;
+  try {
+    result = await quietStdout(() => runInterview(asker, ctx, partial));
+  } catch (error) {
+    if (error instanceof NeedsAnswer) {
+      return emit(
+        {
+          status: "needs_answer",
+          question: error.question,
+          answered: asker.answered,
+          hint: `ask the user, add "${error.question.key}" to the answers object, and re-run (or pass --accept-defaults to take every default)`,
+        },
+        3,
+      );
+    }
+    if (error instanceof InvalidAnswer) return emit({ status: "invalid_answer", question: error.question, problem: error.problem }, 1);
+    throw error;
+  }
+  if (!result) return emit({ status: "cancelled", answered: asker.answered }, 1);
+
+  const envNeeded = [...new Map([...result.envExampleKeys.map((key) => [key, { key, set: ctx.existingEnv.has(key) || key in result.env }] as const)]).values()];
+  const common = { answered: asker.answered, unused_answers: asker.unused(), env_needed: envNeeded, notes: asker.notes };
+
+  if (flags["dry-run"]) {
+    return emit({ status: "dry_run", config_path: configPath, config: finalConfig(result, partial), env_keys: Object.keys(result.env), ...common }, 0);
+  }
+
+  const written = await quietStdout(() => {
+    mkdirSync(sfDir, { recursive: true });
+    scaffoldChains(sfDir);
+    const w = writeInterviewResult(anchor, configPath, result, partial);
+    installSkill();
+    ensureGitignore(anchor.repo_root, GITIGNORE_ENTRIES);
+    return w;
+  });
+  const missingKeys = envNeeded.filter((e) => !e.set).map((e) => e.key);
+  const commitFiles = filesToCommit(anchor.repo_root);
+  // Ordered: secrets first (doctor can't pass without them), then verify, then the two steps that need the user's go-ahead.
+  const nextSteps: Record<string, unknown>[] = [];
+  if (missingKeys.length > 0) {
+    nextSteps.push({ who: "user", step: `add ${missingKeys.join(", ")} to .env (gitignored) — the user types the values; never through the agent chat`, keys: missingKeys });
+  }
+  nextSteps.push({ who: "agent", step: "verify the setup; fix what it reports (piquette-doctor skill)", command: "piquette doctor --json" });
+  if (written.config["watch"]) {
+    nextSteps.push({ who: "agent", step: "seed the tracker labels piquette watch uses — writes to the issue tracker", command: "piquette watch init", confirm_first: true });
+  }
+  if (commitFiles.length > 0) {
+    nextSteps.push({ who: "agent", step: "commit the shared setup so teammates get it (never .env)", files: commitFiles, confirm_first: true });
+  }
+  return emit(
+    {
+      status: "written",
+      config_path: configPath,
+      config: written.config,
+      env_keys_written: written.envWritten,
+      ...(written.warning ? { validation_warning: written.warning } : {}),
+      ...common,
+      files_to_commit: commitFiles,
+      next_steps: nextSteps,
+    },
+    0,
+  );
+}
+
+export async function initCommand(argv: string[]): Promise<number> {
+  const { options, flags } = parseCli(
+    argv,
+    ["cwd", "template", "answers", "only", "skill-agents"],
+    ["force", "yes", "no-skills", "partial", "detect", "json", "accept-defaults", "dry-run"],
+  );
+  const anchor = paths.resolveAnchor(options["cwd"]);
+
+  if (flags["detect"]) return detectCommand(anchor);
+
+  // Idempotent (a no-op once the skills are already up to date, a `.new`
   // sibling rather than an overwrite for a locally-edited file) — safe to
   // call on every `piquette init`, not just the first.
   const installSkill = () => {
     if (flags["no-skills"]) return;
-    installSkillCommand(options["cwd"] ? ["--cwd", options["cwd"]] : []);
+    installSkillCommand([
+      ...(options["cwd"] ? ["--cwd", options["cwd"]] : []),
+      ...(options["skill-agents"] ? ["--agents", options["skill-agents"]] : []),
+    ]);
   };
+
+  if (options["answers"] !== undefined) return answersCommand(anchor, options, flags, installSkill);
+
+  const sfDir = path.join(anchor.repo_root, ".piquette");
+  mkdirSync(sfDir, { recursive: true });
+  scaffoldChains(sfDir);
 
   const configPath = path.join(sfDir, "piquette.config.yaml");
   const templateName = options["template"];
@@ -393,11 +706,11 @@ export async function initCommand(argv: string[]): Promise<number> {
 
   if (flags["partial"]) {
     if (templateName || flags["yes"]) {
-      console.error("piquette init --partial is interactive-only — drop --template/--yes");
+      console.error("piquette init --partial is interactive-only — drop --template/--yes (agents: use --answers with --only <blocks>)");
       return 1;
     }
     if (!isInteractive()) {
-      console.error("piquette init --partial needs a terminal (it asks which block(s) to reconfigure) — piped input isn't supported here");
+      console.error("piquette init --partial needs a terminal (it asks which block(s) to reconfigure) — for scripted/agent use, pass --answers <file> --only <blocks>");
       return 1;
     }
     if (!existsSync(configPath)) {
@@ -405,6 +718,10 @@ export async function initCommand(argv: string[]): Promise<number> {
       return 1;
     }
   }
+
+  const reportWarning = (warning: string | undefined) => {
+    if (warning) console.log(paint("yellow", `warning: ${warning}\nrun \`piquette doctor\` for the full picture.`));
+  };
 
   if (!interactive) {
     if (existsSync(configPath) && !flags["force"]) {
@@ -450,40 +767,12 @@ export async function initCommand(argv: string[]): Promise<number> {
           console.log("init --partial cancelled — nothing written");
           return 1;
         }
-
-        // `defaults` is shared by two blocks (coding_agent, advanced) — runInterview
-        // already reconciled it (seeded from `existing`, each selected block setting or
-        // deleting only its own keys), so it's always the complete, correct replacement.
-        // Every other touched key is owned by exactly one block: set it when this run
-        // produced it, delete it when the block ran but decided against it (see
-        // runInterview's doc comment on `asks`/BLOCK_KEYS for why "ran but absent" must
-        // delete rather than leave the untouched merge default in place).
-        const merged: Record<string, unknown> = { ...existing, defaults: result.config.defaults };
-        if (!merged.defaults || Object.keys(merged.defaults as object).length === 0) delete merged.defaults;
-        for (const block of only) {
-          for (const key of BLOCK_KEYS[block]) {
-            if (key in result.config) merged[key] = result.config[key];
-            else delete merged[key];
-          }
-        }
-
-        writeFileSync(configPath, GENERATED_HEADER + stringify(merged));
-        console.log(`wrote ${configPath} (reconfigured: ${[...only].join(", ")})`);
-        if (Object.keys(result.env).length > 0) upsertEnvFile(anchor.repo_root, result.env);
-        if (result.envExampleKeys.length > 0) {
-          writeEnvExample(anchor.repo_root, [...new Set([...readEnvExampleKeys(anchor.repo_root), ...result.envExampleKeys])]);
-        }
+        reportWarning(writeInterviewResult(anchor, configPath, result, { only, existing }).warning);
         installSkill();
-        try {
-          const cfg = agents.loadConfig([paths.BUILTIN_CONFIG_PATH, configPath]);
-          agents.validate(cfg, cfg.agents.map((a) => a.name), Object.keys(cfg.quality.suites), anchor.cwd);
-        } catch (error) {
-          console.log(paint("yellow", `warning: ${(error as Error).message}\nrun \`piquette doctor\` for the full picture.`));
-        }
         // Falls through to the shared trailer below (gitignore, template list, next-steps) —
         // same as the full-interview success path just below, so --partial prints it too.
       } else {
-        if (existsSync(configPath) && !flags["force"]) {
+        if (existsSync(configPath) && !configIsEmpty(configPath) && !flags["force"]) {
           const overwrite = await asker.confirm(`${configPath} already exists — overwrite it?`, false);
           if (!overwrite) {
             console.log("leaving the existing config alone (--force to skip this prompt)");
@@ -502,24 +791,8 @@ export async function initCommand(argv: string[]): Promise<number> {
           console.log("init cancelled — nothing written");
           return 1;
         }
-
-        writeFileSync(configPath, GENERATED_HEADER + stringify(result.config));
-        console.log(`wrote ${configPath}`);
-        if (Object.keys(result.env).length > 0) upsertEnvFile(anchor.repo_root, result.env);
-        writeEnvExample(anchor.repo_root, result.envExampleKeys);
+        reportWarning(writeInterviewResult(anchor, configPath, result).warning);
         installSkill();
-
-        // The same merge-then-validate pipeline `piquette doctor` runs — catches a
-        // bad answer (e.g. a suite naming an unconfigured check) right after
-        // writing, not at the user's first real chain run. Non-fatal: the
-        // config is already written either way, and `piquette doctor` gives the
-        // full picture.
-        try {
-          const cfg = agents.loadConfig([paths.BUILTIN_CONFIG_PATH, configPath]);
-          agents.validate(cfg, cfg.agents.map((a) => a.name), Object.keys(cfg.quality.suites), anchor.cwd);
-        } catch (error) {
-          console.log(paint("yellow", `warning: ${(error as Error).message}\nrun \`piquette doctor\` for the full picture.`));
-        }
       }
     } catch (error) {
       asker.close();
@@ -536,7 +809,12 @@ export async function initCommand(argv: string[]): Promise<number> {
   if (templates.length > 0) {
     console.log(`templates available via --template: ${templates.join(", ")}`);
   }
+  const commitFiles = filesToCommit(anchor.repo_root);
+  if (commitFiles.length > 0) console.log(`\ncommit for your team (never .env): ${commitFiles.join(" ")}`);
   console.log(`\nnext: piquette doctor   (confirm everything resolves), then piquette scout "describe this repo"`);
+  // No terminal means no interview ran: an agent that reached for a bare `piquette init` got only the starter/template.
+  // Point it at the setup skill, which detects what's there and either finishes setup or hands off to piquette-configure.
+  if (!interactive) console.log(`agents: to finish setup, run \`piquette skill show piquette-setup\` (no setup interview ran here)`);
   console.log(
     paint(
       "yellow",

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { allChains, repoChainProblems } from "../../chains/index.ts";
 import { isInteractive } from "../ask.ts";
+import { parseCli } from "../../core/utils.ts";
 
 /**
  * A repo-defined chain's `source` is an absolute path into `.piquette/chains/` by
@@ -15,7 +16,8 @@ function repoChainLabel(source: string): string {
   return idx === -1 ? source : source.slice(idx);
 }
 
-export async function listCommand(): Promise<number> {
+export async function listCommand(argv: string[] = []): Promise<number> {
+  const { flags } = parseCli(argv, [], ["json"]);
   // Built-ins first, then repo chains — same order `allChains()` guarantees,
   // so this listing and `findChain`'s resolution order never disagree about
   // which chain wins on a name collision.
@@ -35,6 +37,25 @@ export async function listCommand(): Promise<number> {
       repoLabel: chain.source ? repoChainLabel(chain.source) : undefined,
     };
   });
+
+  if (flags["json"]) {
+    // Machine-readable registry for agents: the same facts as the text listing, as data.
+    const out = {
+      chains: chains.map((chain) => ({
+        name: chain.name,
+        phases: chain.phases,
+        describe: chain.describe,
+        agents: typeof chain.requiredAgents === "function" ? null : chain.requiredAgents,
+        agents_from_flag: typeof chain.requiredAgents === "function",
+        suites: typeof chain.requiredSuites === "function" ? chain.requiredSuites({}) : chain.requiredSuites,
+        suites_from_flag: typeof chain.requiredSuites === "function",
+        source: chain.source ? repoChainLabel(chain.source) : null,
+      })),
+      problems: repoChainProblems().map((p) => ({ file: p.file, message: p.message })),
+    };
+    console.log(JSON.stringify(out, null, 2));
+    return 0;
+  }
 
   const usageLines = [
     `piquette <name> "<prompt>" [--config <path>] [--adw-id <id>] [--cwd <dir>] [--suite <name>]   (piquette run <name> ... works identically)`,

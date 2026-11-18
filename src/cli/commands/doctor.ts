@@ -25,6 +25,7 @@ import { ollamaApiKey, ollamaBaseUrl } from "../../core/ollama_provider.ts";
 import { probeCacheDetailsAvailable } from "../../core/cache_details_probe.ts";
 import { cloudflareAiBaseUrl } from "../../core/cloudflare_provider.ts";
 import { binaryOnPath, parseCli } from "../../core/utils.ts";
+import { classifyCheck } from "../doctor_fixes.ts";
 import { describeEndpoint, probeHub } from "../../core/sync/client.ts";
 import { cloudPublicUrl } from "../../cloud/config.ts";
 import { adoptableLegacyDir, defaultFactoryName, machineHome, peekFactoryId, resolveRepoSlug } from "../../core/sync/identity.ts";
@@ -71,7 +72,12 @@ async function withProbeStatus<T>(label: string, run: () => Promise<T>): Promise
 
 interface Report {
   ok: boolean;
-  checks: { name: string; ok: boolean; detail: string; severity?: "info" | "warn" }[];
+  /**
+   * `id` is stable across instances of the same kind of check (see `../doctor_fixes.ts`);
+   * `fix` (and `block`, the `piquette init --answers --only <block>` that owns it) are
+   * attached only to a failing or warning check — a passing one needs no remedy.
+   */
+  checks: { name: string; id: string; ok: boolean; detail: string; severity?: "info" | "warn"; fix?: string; block?: string }[];
 }
 
 /**
@@ -121,7 +127,9 @@ function checkChainRequirements(report: Report, label: string, chain: ChainDefin
 }
 
 function check(report: Report, name: string, ok: boolean, detail: string, severity?: "info" | "warn"): void {
-  report.checks.push({ name, ok, detail, severity });
+  const { id, fix, block } = classifyCheck(name);
+  const needsFix = !ok || severity === "warn";
+  report.checks.push({ name, id, ok, detail, severity, ...(needsFix && fix ? { fix } : {}), ...(needsFix && block ? { block } : {}) });
   if (!ok) report.ok = false;
 }
 
@@ -295,7 +303,7 @@ export async function doctorCommand(argv: string[]): Promise<number> {
   check(report, "repo_root", true, anchor.repo_root);
   // Informational only — no .piquette/ is a fully valid, supported state (pure
   // built-ins), never a failure on its own.
-  check(report, ".piquette directory", true, anchor.piquette_dir ?? "(none — running off packaged built-ins; run `piquette init` to override)");
+  check(report, ".piquette directory", true, anchor.piquette_dir ?? "(none — running off packaged built-ins; to set this repo up, agents run `piquette skill show piquette-setup`, people run `piquette init`)");
 
   const isRepo = isRepoAt(anchor.repo_root);
   check(report, "git repository", isRepo, isRepo ? "yes" : "no — commit phases and change capture will fail");
@@ -2008,7 +2016,7 @@ async function finish(report: Report, json: boolean): Promise<number> {
       report.checks.map((c) => ({
         icon: c.severity === "warn" ? "warn" : c.severity === "info" ? "info" : c.ok ? "ok" : "fail",
         name: c.name,
-        detail: c.detail,
+        detail: c.fix ? `${c.detail} — fix: ${c.fix}` : c.detail,
       })),
       footer,
     );
@@ -2016,6 +2024,7 @@ async function finish(report: Report, json: boolean): Promise<number> {
     for (const c of report.checks) {
       const icon = c.severity === "warn" ? "⚠" : c.severity === "info" ? "ℹ" : c.ok ? "✓" : "✗";
       console.log(`${icon} ${c.name}: ${c.detail}`);
+      if (c.fix) console.log(`    fix: ${c.fix}`);
     }
     console.log(`\n${footer.message}`);
   }

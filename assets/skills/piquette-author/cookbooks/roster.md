@@ -100,7 +100,7 @@ PIQUETTE-specific plumbing, no `provider:` config section to write.
 There's a second, different way to reach Ollama through `claude_code`: route
 the `claude` command itself through `ollama launch claude` via
 `PIQUETTE_CLAUDE_CMD` — as a declarative `env:` entry in `piquette.config.yaml`
-(non-secret; see `config.md`'s "Declarative env vars" section), not a raw
+(non-secret; see `../piquette/references/config.md`'s "Declarative env vars" section), not a raw
 shell export. That launcher form needs its own `--model <tag>` flag in the
 command string, since PIQUETTE always spawns headless — use the literal token
 `{model}` there (substituted with each call's own agent `model:` field)
@@ -221,4 +221,4 @@ naming every path and what happened to it.
 agent**, regardless of `writes:`. `writes: []` means read-only with respect
 to the repo, not unable to write its own report.
 
-Full field-by-field spec: `references/config.md`.
+Full field-by-field spec: `../piquette/references/config.md`.

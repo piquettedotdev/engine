@@ -4,7 +4,7 @@
  * fixture markup with the app's own real renderer, serve it and its real
  * client JS from a scratch directory, drive it with a real browser, and read
  * real DOM state back — the thing a CSS/string check on rendered HTML can
- * never see (#4; see assets/skill/cookbooks/authoring_proof_scripts.md for
+ * never see (#4; see assets/skills/piquette-author/cookbooks/authoring_proof_scripts.md for
  * the full pattern and a worked example).
  *
  * Both halves exist because of a non-obvious failure mode found building one

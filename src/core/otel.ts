@@ -1103,7 +1103,7 @@ export class OtelExporter {
 
     // piquette.cache_details_available: detect vLLM server misconfiguration that would
     // suppress cache_read_tokens even when real cache hits occur (see issue #82 and
-    // the "vLLM's own cache-read pass-through" note in assets/skill/references/
+    // the "vLLM's own cache-read pass-through" note in assets/skills/piquette/references/
     // observability.md). Only emit the attribute when getCacheDetailsAvailability
     // returns EXACTLY false (confirmed missing). Omit it when true (confirmed
     // present), null (probe failed open), or undefined (never probed) — only the

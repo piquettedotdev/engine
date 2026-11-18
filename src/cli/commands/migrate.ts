@@ -55,14 +55,17 @@ export function migrateCommand(argv: string[]): number {
 
   const oldConfigPath = path.join(anchor.repo_root, "adws", "adw_sf_config", "piquette.config.yaml");
   if (!existsSync(oldConfigPath)) {
-    console.log(`no stamped adws/ tree found at ${anchor.repo_root} (looked for ${oldConfigPath}) — nothing to migrate`);
+    if (flags["json"]) console.log(JSON.stringify({ apply, needed: false, actions: [] }, null, 2));
+    else console.log(`no stamped adws/ tree found at ${anchor.repo_root} (looked for ${oldConfigPath}) — nothing to migrate`);
     return 0;
   }
 
   const newSfDir = path.join(anchor.repo_root, ".piquette");
   const newConfigPath = path.join(newSfDir, "piquette.config.yaml");
   if (existsSync(newConfigPath) && !flags["force"]) {
-    console.error(`${newConfigPath} already exists — refusing to overwrite. Pass --force to proceed anyway.`);
+    const error = `${newConfigPath} already exists — refusing to overwrite. Pass --force to proceed anyway.`;
+    if (flags["json"]) console.log(JSON.stringify({ apply, needed: true, error }, null, 2));
+    else console.error(error);
     return 1;
   }
 
@@ -144,7 +147,7 @@ export function migrateCommand(argv: string[]): number {
   });
 
   if (flags["json"]) {
-    console.log(JSON.stringify({ apply, actions }, null, 2));
+    console.log(JSON.stringify({ apply, needed: true, actions }, null, 2));
   } else {
     console.log(apply ? `piquette migrate --apply: ${anchor.repo_root}` : `piquette migrate (dry run — pass --apply to write): ${anchor.repo_root}`);
     for (const a of actions) console.log(`  [${a.kind}] ${a.detail}`);
@@ -182,6 +185,6 @@ export function migrateCommand(argv: string[]): number {
 
   writeFileSync(newConfigPath, doc.toString());
 
-  console.log(`\ndone. Verify with: piquette doctor && piquette sessions`);
+  if (!flags["json"]) console.log(`\ndone. Verify with: piquette doctor && piquette sessions`);
   return 0;
 }

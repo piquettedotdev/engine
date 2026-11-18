@@ -171,17 +171,17 @@ test("the packaged planner prompt has the {{verification}} slot, and the refiner
   assert.doesNotMatch(refiner, /Manual check/i);
 });
 
-test("the gap-flagging note names a real cookbook: authoring_proof_scripts.md exists, ships in the skill, and is routed to from SKILL.md", () => {
+test("the gap-flagging note names a real cookbook: authoring_proof_scripts.md exists, ships in the piquette-author skill, and is routed to from the piquette SKILL.md", () => {
   const anchor = { repo_root: tmpdir(), piquette_dir: null };
   const verification = readFileSync(resolvePromptRef(anchor, "planner/verification.md"), "utf-8");
   assert.match(verification, /cookbooks\/authoring_proof_scripts\.md/, "the planner's note should point at a real cookbook, not a dangling reference");
 
-  const cookbookPath = join(ASSETS_DIR, "skill", "cookbooks", "authoring_proof_scripts.md");
+  const cookbookPath = join(ASSETS_DIR, "skills", "piquette-author", "cookbooks", "authoring_proof_scripts.md");
   assert.ok(existsSync(cookbookPath), `${cookbookPath} should exist — it's what the planner's note above points readers to`);
   const cookbook = readFileSync(cookbookPath, "utf-8");
   assert.match(cookbook, /protected_files/, "should explain why this is a human task, not an agent one");
   assert.match(cookbook, /agent-browser/, "should give a worked pattern, not just the contract");
 
-  const skillMd = readFileSync(join(ASSETS_DIR, "skill", "SKILL.md"), "utf-8");
+  const skillMd = readFileSync(join(ASSETS_DIR, "skills", "piquette", "SKILL.md"), "utf-8");
   assert.match(skillMd, /cookbooks\/authoring_proof_scripts\.md/, "SKILL.md's routing table should list the new cookbook");
 });

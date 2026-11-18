@@ -50,7 +50,7 @@ export function ejectCommand(argv: string[]): number {
       `**This is JS, not TypeScript** — the published package ships compiled output only. It is **not\n` +
       `wired into any \`piquette\` command**: editing these files changes nothing about how \`piquette\` itself runs.\n` +
       `Engine-level changes (a new gate, envelope type, or phase primitive) have no config surface by\n` +
-      `design — see \`authoring_chains.md\` in the installed skill for where each kind of change belongs\n` +
+      `design — see \`cookbooks/authoring_chains.md\` in the installed piquette-author skill for where each kind of change belongs\n` +
       `and why it isn't a \`.piquette/\` override.\n`,
   );
 

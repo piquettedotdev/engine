@@ -583,7 +583,7 @@ export type ThinkingLevel = v.InferOutput<typeof ThinkingLevelSchema>;
 // PIQUETTE before this feature existed — see agents.ts's `mergeRawConfig` (the
 // `sandbox` line) and `SFConfigSchema` below, whose own `v.optional` default
 // makes `cfg.sandbox` always defined even with no config file naming it. See
-// `assets/skill/references/config.md`'s `### sandbox` section for the
+// `assets/skills/piquette/references/config.md`'s `### sandbox` section for the
 // field-by-field rationale; this schema only encodes shape and defaults.
 
 export const SandboxBackendSchema = v.picklist(["local", "opensandbox", "cloudflare"]);

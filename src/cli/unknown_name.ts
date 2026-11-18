@@ -27,7 +27,7 @@ export function closestNames(typed: string, known: readonly string[], max = 3): 
 }
 
 /** At most 3 lines: the error, an optional suggestion, the pointer. */
-export function unknownNameMessage(kind: "chain" | "command or chain", typed: string, known: readonly string[]): string {
+export function unknownNameMessage(kind: "chain" | "command or chain" | "skill", typed: string, known: readonly string[]): string {
   const lines = [`unknown ${kind}: ${typed}`];
   const close = closestNames(typed, known);
   if (close.length > 0) lines.push(`did you mean: ${close.join(", ")}?`);

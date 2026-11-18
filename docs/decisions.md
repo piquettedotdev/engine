@@ -546,7 +546,7 @@ settings it adds.
 Picks the next step at a branch point of a repo graph chain: a
 `.piquette/chains/*.yaml` step that declares more than one `next:` edge. Ticket
 #109. Code: `src/chains/graph.ts`. How to author a graph chain:
-[`authoring_chains.md`](../assets/skill/cookbooks/authoring_chains.md#declared-transitions-next).
+[`authoring_chains.md`](../assets/skills/piquette-author/cookbooks/authoring_chains.md#declared-transitions-next).
 
 - **Question and options.** A `choice` over that step's declared `next:`
   step ids, in the order the yaml lists them. The set is built from the

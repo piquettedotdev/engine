@@ -27,7 +27,7 @@ harness with no subprocess and no separate CLI to have on `PATH`.
 `coding_agent: claude_code` is a second backend — it shells out to your own
 installed `claude` CLI instead, for repos that want to run agents on
 Claude Code (including pointed at a local or cloud Ollama server). See
-`roster.md`.
+`../piquette-author/cookbooks/roster.md`.
 
 ## Layout, once you run something
 
@@ -104,8 +104,8 @@ launching anything.
 | Need | Go to |
 |---|---|
 | Launch a chain, watch it, report on it | `cookbooks/run_adw.md` (after `how_to_prompt_for_the_eng.md`) |
-| Retune the roster, add an agent | `cookbooks/roster.md` |
-| Add or extend a chain | `cookbooks/authoring_chains.md` |
+| Retune the roster, add an agent | `../piquette-author/cookbooks/roster.md` |
+| Add or extend a chain | `../piquette-author/cookbooks/authoring_chains.md` |
 | Fold a third-party review tool's findings into the reviewer's verdict | `cookbooks/ocr_reviewer.md` |
 | Envelope/gate/session contract | `references/handoff.md` |
 | Trace schema, spend vs. context | `references/observability.md` |

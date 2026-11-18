@@ -56,7 +56,7 @@ tell the difference, which is the point.
 The envelope is a **manifest of claims**. Gates verify those claims after
 the fact — declared artifacts exist and are non-empty, declared changed
 files appear in the diff, a review's verdict agrees with its own findings.
-See `authoring_chains.md` for adding a gate or an output type.
+See `../piquette-author/cookbooks/authoring_chains.md` for adding a gate or an output type.
 
 ## The typed-output rule — the synced triad
 
