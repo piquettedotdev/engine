@@ -272,6 +272,8 @@ keep in sync by hand. The available steps:
 | `reviseLoop({max?, retestSuite?})` | a bounded review→revise loop | same idea, for `reviewer`/`builder`; skipped when the run is already unaccepted; re-runs a suite (`retest`) after a landed, approved revision |
 | `changes({base?})` | a `git diff`-against-a-base code phase | feeds `document()` |
 | `document()` | a `documenter` phase | requires a preceding `changes()` |
+| `proveBase()` | runs the plan's journeys on the code BEFORE the change | no-op without `receipts:`; flags (never blocks) journeys that already pass |
+| `proveHead({suite?, owner?, fix?})` | proves the change: journeys + non-negotiables, recorded as a receipt; a FAIL goes to `owner` (default `builder`) to fix, bounded by `receipts.max_failed_proofs` | no-op without `receipts:`; `suite` (default `test`) is re-run after a proof-driven fix; `fix: false` records only |
 | `commit({onlyIfAccepted?})` | a `git commit` code phase | commits whatever the last agent step produced |
 
 **Why the loops are steps, not a `for` you write in the chain.** `fixLoop`

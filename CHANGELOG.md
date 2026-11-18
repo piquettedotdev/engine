@@ -8,6 +8,17 @@ record independent of the commit log.
 
 ## Unreleased
 
+### Added — repo (yaml) chains can prove: `proveBase` / `proveHead` steps
+
+- `.piquette/chains/*.yaml` may now name `proveBase` and `proveHead`, the
+  same verification steps `plan-build-test`, `plan-build-test-quality` and
+  `simple-sdlc` use. Before this, a repo chain could never produce a receipt
+  — `STEP_SPECS` had no entry for either, so a custom chain (a scout/planner
+  variant, a CMS or UI lane) silently ran unverified while the built-ins
+  proved. Both remain no-ops without a `receipts:` block. `proveHead` takes
+  `suite` (default `test`, re-run after a proof-driven fix), `owner`
+  (default `builder`), `description`, `fixDescription` and `fix`.
+
 ### Changed — project renamed from Super Portable Software Factory to Piquette
 
 - **The package is now `@piquette/engine`** (was `@gr8ful/spf`), the repo is
