@@ -19,6 +19,7 @@ import { machineConfigPath } from "../../core/paths.ts";
 import { parseCli } from "../../core/utils.ts";
 import { createAsker, inkAvailable, isInteractive, InterviewAborted, type Asker } from "../ask.ts";
 import { runCloudInitInterview } from "../interview_cloud.ts";
+import { createAnswersAsker, InvalidAnswer, NeedsAnswer, readAnswers, type AnswerValue } from "../answers_asker.ts";
 
 const USAGE =
   "usage: piquette cloud init [--yes] [--force] [--skip-access-plan] [--config <path>]\n" +
@@ -26,6 +27,7 @@ const USAGE =
   "       [--team-domain <d>] [--modules <csv of receipts,ingest,dashboard>]\n" +
   "       [--bucket <n>] [--d1 <n>] [--tenant <id>] [--reader-email <csv>] [--reader-domain <csv>]\n" +
   "       [--sync | --no-sync]\n" +
+  "       piquette cloud init --answers <file|-|json> [--accept-defaults] [--dry-run] [--force] [--config <path>]   (agent-driven; prints JSON, exit 3 = next question)\n" +
   "       piquette cloud init --add-tenant --tenant <id> [--reader-email <csv>] [--reader-domain <csv>]\n" +
   "       [--force] [--skip-access-plan] [--config <path>]";
 
@@ -47,8 +49,8 @@ export async function cloudInitCommand(argv: string[]): Promise<number> {
   try {
     parsed = parseCli(
       argv,
-      ["config", "name", "hostname", "route", "zone", "base-path", "team-domain", "modules", "bucket", "d1", "tenant", "reader-email", "reader-domain"],
-      ["yes", "force", "sync", "no-sync", "skip-access-plan", "add-tenant"],
+      ["config", "name", "hostname", "route", "zone", "base-path", "team-domain", "modules", "bucket", "d1", "tenant", "reader-email", "reader-domain", "answers"],
+      ["yes", "force", "sync", "no-sync", "skip-access-plan", "add-tenant", "accept-defaults", "dry-run"],
     );
   } catch (error) {
     console.error(`${(error as Error).message}\n${USAGE}`);
@@ -67,6 +69,7 @@ export async function cloudInitCommand(argv: string[]): Promise<number> {
   const alreadyConfigured = Boolean(existing["cloud"]);
 
   if (flags["add-tenant"]) return addTenant(existing, targetPath, options, flags, out, err);
+  if (options["answers"] !== undefined) return answersInit(existing, targetPath, alreadyConfigured, options, flags);
 
   const interactive = !flags["yes"] && isInteractive();
   let answers: CloudInitAnswers;
@@ -155,6 +158,72 @@ export async function cloudInitCommand(argv: string[]): Promise<number> {
     accessPlan(validated.cfg, { out });
   }
   return 0;
+}
+
+/**
+ * `piquette cloud init --answers` — the same interview, driven by a JSON
+ * answers object through `../answers_asker.ts`, for an agent. Always prints one
+ * JSON document. Exit codes: 0 written / dry run, 3 the next question still
+ * needs an answer (nothing written), 1 invalid answer, invalid generated
+ * config, or an existing cloud: block without --force.
+ */
+async function answersInit(
+  existing: Record<string, unknown>,
+  targetPath: string,
+  alreadyConfigured: boolean,
+  options: Record<string, string>,
+  flags: Record<string, boolean>,
+): Promise<number> {
+  const emit = (doc: Record<string, unknown>, code: number): number => {
+    console.log(JSON.stringify(doc, null, 2));
+    return code;
+  };
+  if (alreadyConfigured && !flags["force"] && !flags["dry-run"]) {
+    return emit({ status: "error", config_path: targetPath, error: `${targetPath} already has a cloud: block — pass --force to replace it, or use --add-tenant to add a tenant` }, 1);
+  }
+  let answersIn: Record<string, AnswerValue>;
+  try {
+    answersIn = readAnswers(options["answers"]);
+  } catch (error) {
+    return emit({ status: "error", error: `could not read --answers: ${(error as Error).message}` }, 1);
+  }
+  const asker = createAnswersAsker(answersIn, { acceptDefaults: flags["accept-defaults"] });
+  let answers: CloudInitAnswers;
+  try {
+    answers = await runCloudInitInterview(asker);
+  } catch (error) {
+    if (error instanceof NeedsAnswer) {
+      return emit({ status: "needs_answer", question: error.question, answered: asker.answered, hint: `ask the user, add "${error.question.key}" to the answers object, and re-run` }, 3);
+    }
+    if (error instanceof InvalidAnswer) return emit({ status: "invalid_answer", question: error.question, problem: error.problem }, 1);
+    throw error;
+  }
+  const cloudBlock = buildCloudBlock(answers);
+  const merged = mergeMachineConfig(existing, cloudBlock, answers.sync);
+  const validated = validateMerged(merged);
+  const common = { config_path: targetPath, answered: asker.answered, unused_answers: asker.unused() };
+  if (!validated.ok) return emit({ status: "invalid_config", error: validated.message, ...common }, 1);
+  if (flags["dry-run"]) return emit({ status: "dry_run", cloud: merged["cloud"], sync: merged["sync"] ?? null, ...common }, 0);
+
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+  writeFileSync(targetPath, GENERATED_HEADER + stringify(merged));
+  const planLines: string[] = [];
+  accessPlan(validated.cfg, { out: (line) => planLines.push(line), json: true });
+  let plan: unknown = planLines.join("\n");
+  try {
+    plan = JSON.parse(plan as string);
+  } catch {
+    // keep it as text — never fail a completed write over how the plan printed
+  }
+  return emit(
+    {
+      status: "written",
+      ...common,
+      access_plan: plan,
+      next: "the user creates the Access applications in access_plan in the Cloudflare dashboard and replaces cloud.access.aud with the real AUD(s); then `piquette cloud deploy --dry-run`",
+    },
+    0,
+  );
 }
 
 /**

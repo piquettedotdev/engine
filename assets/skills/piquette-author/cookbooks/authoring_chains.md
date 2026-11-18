@@ -59,7 +59,7 @@ so wrap a tool that exits 0 on findings. Put every command in ONE suite
 rather than chaining two `fixLoop`s: acceptance is kept per suite (below), so
 a first loop that ends red keeps the run unaccepted however the second ends.
 `piquette init` scaffolds `.piquette/chains/review-fix.yaml` (commented out) with the
-full worked example; `ocr_reviewer.md` covers the alternative of having the
+full worked example; `../piquette/cookbooks/ocr_reviewer.md` covers the alternative of having the
 reviewer agent consult the tool as evidence instead.
 
 **Decision-model finding triage** (`decisions.kinds.finding_triage`, off by default; see
@@ -390,7 +390,7 @@ export type MyOutputT = v.InferOutput<typeof MyOutput.schema>;
 Then the two other legs of the synced triad: the calling step's
 `output_type: MyOutput`, and the agent's `user.md` `## Report` section
 showing the exact JSON shape. All three must move together — see
-`references/handoff.md`.
+`../piquette/references/handoff.md`.
 
 ### Adding a gate
 

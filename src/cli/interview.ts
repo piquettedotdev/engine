@@ -291,7 +291,7 @@ export async function runInterview(asker: Asker, ctx: DetectedContext, partial?:
       const baseUrl = await asker.text("ANTHROPIC_BASE_URL", { default: "http://localhost:11434" });
       env["ANTHROPIC_BASE_URL"] = baseUrl;
       const token = await asker.secret("ANTHROPIC_AUTH_TOKEN", { current: ctx.existingEnv.get("ANTHROPIC_AUTH_TOKEN") });
-      env["ANTHROPIC_AUTH_TOKEN"] = token || "ollama";
+      env["ANTHROPIC_AUTH_TOKEN"] = token || ctx.existingEnv.get("ANTHROPIC_AUTH_TOKEN") || "ollama";
       envExampleKeys.push("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN");
       asker.note(
         "piquette doctor now probes ANTHROPIC_BASE_URL with a minimal POST /v1/messages (informational only, never a hard failure) and flags a base URL that already ends in \"/v1\" as a likely double-path mistake — the default above (without a trailing /v1) is exactly what that check is guarding against. It still cannot validate ANTHROPIC_AUTH_TOKEN itself.",
@@ -313,7 +313,7 @@ export async function runInterview(asker: Asker, ctx: DetectedContext, partial?:
       });
       env["ANTHROPIC_BASE_URL"] = baseUrl;
       const token = await asker.secret("CF_AIG_TOKEN (gateway token)", { current: ctx.existingEnv.get("ANTHROPIC_API_KEY") });
-      const tok = token || "replace-me";
+      const tok = token || ctx.existingEnv.get("ANTHROPIC_API_KEY") || "replace-me"; // an empty answer means "keep current", never "overwrite with the placeholder"
       // Claude Code requires ANTHROPIC_API_KEY to be set even when the
       // gateway ignores it — the CF doc reuses the gateway token as the
       // placeholder. The real auth rides on the custom header below.

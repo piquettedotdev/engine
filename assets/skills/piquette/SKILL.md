@@ -19,7 +19,7 @@ chain change — made deliberately — then a re-run.
 
 ## Startup
 
-Run `piquette list` once, at the start of the conversation — it's the real menu;
+Run `piquette list --json` once, at the start of the conversation — it's the real menu;
 chain names elsewhere in this skill are shape, not literal. `piquette doctor`
 answers "why did nothing happen" in one shot (every path, agent, quality
 suite, provider key) before you spend a token guessing.
@@ -33,18 +33,24 @@ phases`/`piquette events` exist so nobody has to guess the schema again).
 ## Orchestrator rules
 
 - Never do a chain's work yourself — a missing chain shape is a `piquette list`
-  gap to report or author (`authoring_chains.md`), not a reason to freehand it.
+  gap to report or author (`../piquette-author/cookbooks/authoring_chains.md`), not a reason to freehand it.
 - Never hand-edit anything under `.piquette/data/sessions/<adw_id>/` — audit trail, not a scratchpad.
 - Observe through `piquette sessions`/`piquette phases`/`piquette events`, never by guessing at `piquette.db`'s schema.
+- Never take an API key, token, or webhook URL through the chat, or write one yourself — the user puts secrets in `.env`; `piquette doctor --json` confirms they're present.
 
 ## Request routing
 
 | Request shape | Go to |
 |---|---|
+| "set up / install / init piquette here" (no `.piquette/piquette.config.yaml` yet) | the **piquette-setup** skill |
+| "change the model / backend / quality checks / watch / notifications" | the **piquette-configure** skill |
+| "why isn't piquette working" / `piquette doctor` failed | the **piquette-doctor** skill |
+| "I upgraded piquette" / "update/tidy piquette here" / `.new` files to merge | the **piquette-maintain** skill |
+| hosted receipts/dashboard, `piquette cloud`, factory sync tokens | the **piquette-cloud** skill |
 | "run/build/plan/fix X" | `run_adw.md` — read `how_to_prompt_for_the_eng.md` first, always |
-| "add/retune an agent or model" | `roster.md` |
-| "add a chain / a phase / an output type / a gate" | `authoring_chains.md` |
-| "write/add a proof script (receipts/journeys can't verify this for real, e.g. a UI change)" | `cookbooks/authoring_proof_scripts.md` |
+| "add/retune an agent or model" | the **piquette-author** skill (`cookbooks/roster.md`) |
+| "add a chain / a phase / an output type / a gate" | the **piquette-author** skill (`cookbooks/authoring_chains.md`) |
+| "write/add a proof script (receipts/journeys can't verify this for real, e.g. a UI change)" | the **piquette-author** skill (`cookbooks/authoring_proof_scripts.md`) |
 | "what is PIQUETTE" | `piquette_overview.md` |
 | "fold a third-party review tool's findings into the reviewer" | `cookbooks/ocr_reviewer.md` |
 | "run piquette watch in herdr / see my in-flight issues in herdr's sidebar" | `cookbooks/herdr.md` |

@@ -22,6 +22,7 @@ import { decisionsCommand } from "./commands/decisions.ts";
 import { listCommand } from "./commands/list.ts";
 import { initCommand } from "./commands/init.ts";
 import { installSkillCommand } from "./commands/install-skill.ts";
+import { skillCommand } from "./commands/skill.ts";
 import { migrateCommand } from "./commands/migrate.ts";
 import { ejectCommand } from "./commands/eject.ts";
 import { doctorCommand } from "./commands/doctor.ts";
@@ -42,19 +43,25 @@ import { cloudCommand } from "./commands/cloud.ts";
 
 const HELP = `piquette — repeatable agents-plus-code workflows (ADWs)
 
-  piquette list                                  the chain registry — names, phases, what each needs
+  AI agents: before setting up, configuring or fixing piquette in a repo, read your instructions with
+  \`piquette skill show piquette-setup\` (or \`piquette skill list\` for the rest) — nothing needs installing first.
+
+  piquette list [--json]                         the chain registry — names, phases, what each needs
   piquette <chain> "<prompt>" [options]          run a chain (piquette run <chain> ... works identically)
   piquette fanout <chain> "<prompt>" [--n 3]     best-of-N: N isolated attempts, one deterministic winner branch — YOU merge it, piquette never does
   piquette fanout --clean <base-adw-id>          remove leftover worktrees/branches from a killed or discarded fanout run
   piquette loop <chain> "<goal>" --until-suite <name> --max N [--issue <id>]   run a chain repeatedly toward a goal until a named quality.suites check passes
   piquette estimate <chain> "<prompt>" [--n N]   read-only: planned model routing + a token/cost projection from real trace history — starts nothing, exits 3 if there's no history yet
   piquette decisions calibrate [--kind k] [--target-precision 0.9] [--min-samples 30] [--since <iso-date>] [--json]   read-only: join recorded decisions to observed outcomes, per (kind, backend, provider, model) — agree/would_act rates, a confidence reliability table, a suggested threshold; never writes config
-  piquette init [--force] [--yes] [--template <name>] [--no-skills]  interview to seed .piquette/piquette.config.yaml + .env, and install the Claude Code skill unless --no-skills (--yes/--template skip the interview, not the skill install)
+  piquette init [--force] [--yes] [--template <name>] [--no-skills]  interview to seed .piquette/piquette.config.yaml + .env, and install the agent skills (.claude/ + .agents/) unless --no-skills (--yes/--template skip the interview, not the skill install)
+  piquette init --detect                         read-only: print what init detects + what's configured, as JSON (agents start here)
+  piquette init --answers <file|-|json> [--only <blocks>] [--accept-defaults] [--dry-run] [--force]   the same interview, driven by a JSON answers object — prints the next unanswered question (exit 3) until complete; never accepts secrets
   piquette init --partial                        reconfigure one or more existing blocks (coding agent, quality, receipts, watch, notifications, advanced) without re-answering the rest; interactive-only, needs an existing piquette.config.yaml
-  piquette install-skill [--user] [--force]      (re)install the Claude Code skill by hand — piquette init already does this
+  piquette skill list [--json] | show <name> [--file <path>]   read the packaged agent skills straight from the CLI (no install needed)
+  piquette install-skill [--user] [--agents claude,agents] [--force] [--json]   (re)install the packaged agent skills into .claude/skills and .agents/skills — piquette init already does this
   piquette migrate [--apply] [--force]           move an old stamped adws/ tree onto .piquette/ (dry run by default)
   piquette eject [--target <dir>] [--force]      copy the installed engine out for reference/hand-editing
-  piquette doctor [--json]                       check everything that fails silently otherwise
+  piquette doctor [--json]                       check everything that fails silently otherwise (each failing check carries a stable id + fix)
   piquette prove --journeys <file> [--record]    run journeys (+ non-negotiables) on this revision, write a receipt — exit 0 PASS, 1 FAIL, 2 can't tell
   piquette cloud init [--yes] [--force] ...      interview (or flags) that writes cloud:/sync: into the machine-layer config, then prints the Access apps it implies
   piquette cloud init --add-tenant --tenant <id> --reader-email/--reader-domain <csv>   add (or --force-replace) a tenant without hand-editing cloud.tenants
@@ -213,10 +220,13 @@ export async function main(): Promise<void> {
         process.exitCode = await decisionsCommand(rest);
         return;
       case "list":
-        process.exitCode = await listCommand();
+        process.exitCode = await listCommand(rest);
         return;
       case "init":
         process.exitCode = await initCommand(rest);
+        return;
+      case "skill":
+        process.exitCode = skillCommand(rest);
         return;
       case "install-skill":
         process.exitCode = installSkillCommand(rest);

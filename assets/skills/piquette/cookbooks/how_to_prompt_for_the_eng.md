@@ -79,7 +79,7 @@ Chains are the engineer's to add, rename, and rewire, so **`piquette list`'s out
 
 **The more complex the ask, the more complete the chain.** Complexity means: more than one file, a behaviour you cannot describe in one sentence, anything touching data or an interface others call, or any request where you had to guess. When two chains both fit, take the longer one — a phase you did not need costs cents, while a change nobody planned, verified, reviewed, or wrote up costs an afternoon.
 
-If nothing in `piquette list` fits the shape you need, say so and offer to compose one (`authoring_chains.md`) rather than forcing the work into a chain that skips the phase it needed.
+If nothing in `piquette list` fits the shape you need, say so and offer to compose one (`../piquette-author/cookbooks/authoring_chains.md`) rather than forcing the work into a chain that skips the phase it needed.
 
 ## Workflow
 

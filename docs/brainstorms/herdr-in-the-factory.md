@@ -119,14 +119,14 @@ When the chain needs a human (a signoff prompt, gates still failing after the co
 ## Outcome (2026-09-25)
 
 - **API verified** against herdr 0.7.5 (socket protocol 17) with a live server. An external process can `pane.split` (returns the pane id), `pane.rename`, `pane.send_text`, `pane.report_agent` (`idle | working | blocked | unknown`; no `done`), `pane.report_metadata` (title, state labels), `pane.release_agent`, and `notification.show`. herdr then lists the pane as agent `piquette` with the reported status. Wire format: one newline-terminated JSON `{id, method, params}` per Unix-socket connection, which is the same shape herdr's own built-in integrations use.
-- **#1 shipped:** `assets/skill/cookbooks/herdr.md`, section (a).
+- **#1 shipped:** `assets/skills/piquette/cookbooks/herdr.md`, section (a).
 - **#2 shipped as a notify channel** (`kind: herdr`, `src/core/notify/herdr_channel.ts`), not a new subsystem. `deps.notify` already fires at every watch lifecycle step, so `watch.ts` is untouched. The doctor check (step 4) shipped with it. One design change from the plan: the trace tail starts on the run's own `run_started`, not on the claim. At claim time a fresh repo has no trace db yet, and a revision's previous session is already finished, which `--follow` would print and exit on.
 - **#3 still held**, as planned.
 
 ## Next steps (as originally planned)
 
 1. **Verify herdr's API surface. This decides whether #2 is feasible.** Can an external process (a) create a pane running an arbitrary command, (b) set a pane's title, and (c) set or override its displayed state (working/blocked/done) for a process herdr didn't detect itself? If (c) is impossible, #2 falls back to titles only, and much of its value goes with it.
-2. Write the cookbook (#1) under `assets/skill/cookbooks/`, then gauge interest.
+2. Write the cookbook (#1) under `assets/skills/piquette/cookbooks/`, then gauge interest.
 3. Spike #2 behind a feature flag: a `core/herdr.ts` adapter that shells out to the herdr CLI, is a no-op when herdr isn't found, and is exercised by a unit test with a fake CLI (like `fake_tty.ts`).
 4. Add a `herdr` line to `piquette doctor` (present / version / socket reachable) in the same PR as the spike.
 5. Hold #3 until #2 has been used on a real `watch` run with `concurrency ≥ 2`.

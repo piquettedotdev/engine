@@ -17,7 +17,7 @@ Everyone can get an agent to write code once. Almost nobody gets the same result
 npm i -g @piquette/engine
 ```
 
-No Bun, no separate coding-agent binary to install first, no template stamped into your repo. `piquette` ships with a packaged default agent roster and default prompts — it runs against any repo with zero setup, and only writes files into that repo if you explicitly ask it to (`piquette init`, which also installs the Claude Code skill unless you pass `--no-skills`; `piquette install-skill` does just the skill by hand).
+No Bun, no separate coding-agent binary to install first, no template stamped into your repo. `piquette` ships with a packaged default agent roster and default prompts — it runs against any repo with zero setup, and only writes files into that repo if you explicitly ask it to (`piquette init`, which also installs piquette's agent skills unless you pass `--no-skills`; `piquette install-skill` does just the skills by hand).
 
 ```bash
 cd your-repo
@@ -27,7 +27,36 @@ piquette scout "describe this repo"      # a real, read-only run, no setup requi
 
 `piquette doctor` is the answer to "why did nothing happen": it resolves and prints every path, validates the whole roster and every quality suite, and checks the things that fail silently otherwise — a missing provider key, a quality check whose binary isn't on `PATH`, a stale `protected_files` pattern.
 
-> **Setting this up with an AI agent?** Paste [`START.md`](START.md) into the agent's context (Cursor rules, AGENTS.md, Codex, a bare Claude conversation). It walks the agent through install, a short configuration interview, and first runs.
+### Set up a repo
+
+The quickest path is to have your coding agent do it. piquette carries its own instructions for agents, so nothing needs installing in the repo first:
+
+1. `npm i -g @piquette/engine`
+2. Tell your agent (Claude Code, Codex, opencode, Cursor, ...): **"set up piquette in this repo."** `piquette --help` points it at `piquette skill show piquette-setup`. It detects the repo, asks you the setup questions, writes `.piquette/piquette.config.yaml`, and installs the skills.
+3. Add the keys it names to `.env` yourself. It never asks for a secret in the chat, and the CLI refuses them if passed in.
+4. It runs `piquette doctor`, offers `piquette watch init` if you turned watch on, and commits the shared setup when you say so.
+
+**By hand instead:** run `piquette init` on a terminal for the same interview, fill `.env`, then run `piquette doctor`.
+
+**Joining a repo that already uses piquette:** the config and skills are already committed, so install the CLI, copy `.env.example`'s key names into your own `.env` with your values, and run `piquette doctor`. If your CLI is newer than the repo's skills, ask your agent to "update piquette here" (the `piquette-maintain` skill).
+
+To give an agent the whole walkthrough up front, paste [`START.md`](START.md) into its context instead (Cursor rules, AGENTS.md, a bare conversation). It covers install, hands setup to the same skill, and walks through first runs.
+
+### Agent skills
+
+piquette ships seven [Agent Skills](https://agentskills.io): instructions an agent loads when a request matches. They are readable straight from the CLI (`piquette skill list`, `piquette skill show <name>`), and `piquette init` installs them into the repo for Claude Code (`.claude/skills/`) and for every agent that reads `.agents/skills/`.
+
+| Skill | Use it to |
+|---|---|
+| `piquette` | run chains and read their results (the orchestrator) |
+| `piquette-setup` | set piquette up in a repo for the first time |
+| `piquette-configure` | change part of an existing config: backend or model, quality checks, receipts, watch, notifications |
+| `piquette-doctor` | turn failing `piquette doctor` checks into fixes |
+| `piquette-maintain` | after upgrading: re-sync the skills, merge `.new` files, migrate, prune redundant config |
+| `piquette-author` | write repo chains, retune or add agents, write proof scripts |
+| `piquette-cloud` | deploy and operate the hosted side on your own Cloudflare account |
+
+Every skill follows the same secrets rule: keys go in `.env`, typed by you, never through the agent.
 
 ### Customizing a repo
 
@@ -36,6 +65,8 @@ piquette init                       # on a TTY: an interview — agent, model, q
 piquette init --yes                 # skip the interview — seed the commented, all-defaults starter config instead
 piquette init --template ts-cc      # or start from a packaged, ready-to-run template instead
 piquette init --partial             # reconfigure one or more existing blocks without re-answering the rest
+piquette init --detect              # agents: what's detected and configured, as JSON (writes nothing)
+piquette init --answers '<json>'    # agents: the same interview from a JSON answers object, one question at a time
 piquette list                       # every chain this install knows, its phases, what it needs
 ```
 
@@ -47,7 +78,9 @@ Without an interview, `piquette init` writes the same small starter `.piquette/p
 
 Two templates demonstrate a pattern rather than one backend: [`tiered`](assets/templates/tiered.piquette.config.yaml) (`piquette init --template tiered`) runs scout/planner/builder on a local Ollama model and gives the reviewer a frontier hosted model with an adversarial stance, plus a `defaults.max_run_cost` cap — cheap proposes, expensive disposes. [`jira-bitbucket`](assets/templates/jira-bitbucket.piquette.config.yaml) (`piquette init --template jira-bitbucket`) is the split-provider `piquette watch` pairing — Jira issues, Bitbucket PRs — with the `repo` vs `issue_repo` distinction, the `JIRA_*`/`BITBUCKET_*` env keys, and the refine-lane provider requirement spelled out in comments.
 
-Every `piquette init` run — interview or not — also installs the repo-local Claude Code skill (`.claude/skills/piquette`), the same work `piquette install-skill` does by hand: pass `--no-skills` to skip it. It's idempotent (a no-op once the skill is already current, and writes a `.new` sibling instead of overwriting a file you've locally edited), so re-running `piquette init` never clobbers anything there. `piquette install-skill --user` (installing to `~/.claude/skills/piquette` instead) is still its own separate invocation.
+Every `piquette init` run — interview or not — also installs piquette's agent skills (`piquette`, `piquette-setup`, `piquette-configure`, `piquette-doctor`, `piquette-maintain`, `piquette-author`, `piquette-cloud`) into both `.claude/skills/` (Claude Code) and `.agents/skills/` (the open Agent Skills layout — Codex, opencode, ...), the same work `piquette install-skill` does by hand: pass `--no-skills` to skip it, or `--skill-agents claude` / `--skill-agents agents` to install only one layout. It's idempotent (a no-op once a skill is already current, and writes a `.new` sibling instead of overwriting a file you've locally edited), so re-running `piquette init` never clobbers anything there. `piquette install-skill --user` (installing to `~/.claude/skills/` and `~/.agents/skills/` instead) is still its own separate invocation.
+
+**Agent-driven setup (the commands under the skills).** An agent can run the same interview without a terminal: `piquette init --detect` prints what init detects and what's already configured as JSON; `piquette init --answers '<json>'` runs the interview from a `{question_key: answer}` object, and when it reaches a question with no answer it writes nothing, prints that question (key, kind, choices, default) and exits 3 — the agent asks its user, adds the answer, and re-runs. `--only <blocks>` reconfigures part of an existing config (the agent equivalent of `--partial`), `--accept-defaults` takes every default, `--dry-run` previews. Secrets are never accepted through `--answers`: the result's `env_needed` lists the key names the user has to put in `.env` themselves. A comments-only config (what a non-interactive `piquette init` writes) counts as unconfigured: `--detect` reports `config_empty: true` and `--answers` replaces it without `--force`. A successful run returns `files_to_commit` (never `.env`) and ordered `next_steps`: the `.env` keys the user must add, `piquette doctor --json`, `piquette watch init` when watch is on, and the commit, the last two marked `confirm_first`. `piquette doctor --json` gives every failing check a stable `id`, a `fix` hint, and (where re-asking fixes it) the `block` to re-ask. `--detect` also reports installed skill versions, `.new` files still to merge, and `redundant_overrides` (config values that already equal the packaged default); `piquette cloud init --answers` does the same question loop for the machine-layer `cloud:`/`sync:` block.
 
 ### Local development
 
@@ -255,7 +288,7 @@ For unattended work, `piquette watch`'s PR-merge is the only human accountabilit
 
 See `core/permissions.ts` for the implementation — the snapshot/compare logic, not the config terms.
 
-`simple-sdlc`'s `commit_build` phase is the one place in this codebase where an AI reviewer's `approved` flag alone would otherwise gate a commit — everywhere else the reviewer either doesn't run (`plan-build-test`, ...) or nothing commits on its verdict (`build-review` has no commit step). Run attended, that phase asks before committing — default **no**, never `review.approved` itself, bounded by `review.signoff_timeout_seconds` (default 300s; expiry answers no) — and only an explicit, recorded "yes" ever earns a `Signed-off-by:` trailer, built from `git config user.name`/`user.email` at the repo, never an env var. Run unattended (`piquette watch`, CI), there is nobody to ask: `piquette watch`'s own human gate is the PR merge above, informed by the reviewer's digest in the PR body, and the phase either proceeds on the AI verdict alone with a loud warning (`review.require_human_signoff: false`, this release's default — fail-open until `piquette watch` itself becomes signoff-aware) or fails closed and asks you to rerun attended (`require_human_signoff: true`). See `assets/skill/references/config.md`'s `review` section for the two knobs, and [`assets/skill/cookbooks/ocr_reviewer.md`](assets/skill/cookbooks/ocr_reviewer.md) if you want the reviewer to fold a third-party review tool's findings into its own verdict as one more piece of evidence.
+`simple-sdlc`'s `commit_build` phase is the one place in this codebase where an AI reviewer's `approved` flag alone would otherwise gate a commit — everywhere else the reviewer either doesn't run (`plan-build-test`, ...) or nothing commits on its verdict (`build-review` has no commit step). Run attended, that phase asks before committing — default **no**, never `review.approved` itself, bounded by `review.signoff_timeout_seconds` (default 300s; expiry answers no) — and only an explicit, recorded "yes" ever earns a `Signed-off-by:` trailer, built from `git config user.name`/`user.email` at the repo, never an env var. Run unattended (`piquette watch`, CI), there is nobody to ask: `piquette watch`'s own human gate is the PR merge above, informed by the reviewer's digest in the PR body, and the phase either proceeds on the AI verdict alone with a loud warning (`review.require_human_signoff: false`, this release's default — fail-open until `piquette watch` itself becomes signoff-aware) or fails closed and asks you to rerun attended (`require_human_signoff: true`). See `assets/skills/piquette/references/config.md`'s `review` section for the two knobs, and [`assets/skills/piquette/cookbooks/ocr_reviewer.md`](assets/skills/piquette/cookbooks/ocr_reviewer.md) if you want the reviewer to fold a third-party review tool's findings into its own verdict as one more piece of evidence.
 
 ---
 
@@ -392,8 +425,8 @@ It shows up in `piquette list`/`piquette doctor` exactly like a built-in, and ru
 the identical `stepChain()` driver — there is no second interpreter. The full
 step vocabulary, the gate rules, and the `piquette watch` main-anchor divergence
 (a chain edited on an issue branch is *not* what an in-flight `piquette watch` run
-uses) are documented in the installed skill's "Repo-local chains" section
-(`.claude/skills/piquette/cookbooks/authoring_chains.md`, after `piquette init`).
+uses) are documented in the `piquette-author` skill's "Repo-local chains" section
+(`piquette skill show piquette-author --file cookbooks/authoring_chains.md`).
 
 ---
 
@@ -483,7 +516,7 @@ piquette watch --once             # one poll tick, then exit — good for cron
 piquette watch --dry-run          # log intended claims/transitions, mutate nothing
 ```
 
-No GitHub App, no webhook, no Jira/Bitbucket app install — it's a plain REST poll against whichever combination is configured, same philosophy as the trace db's own polling contract. See [`assets/templates/`](assets/templates/) for full worked configs (also usable directly via `piquette init --template <name>`), and `piquette install-skill`'s installed skill (`roster.md`, `references/config.md`) for the field-by-field reference.
+No GitHub App, no webhook, no Jira/Bitbucket app install — it's a plain REST poll against whichever combination is configured, same philosophy as the trace db's own polling contract. See [`assets/templates/`](assets/templates/) for full worked configs (also usable directly via `piquette init --template <name>`), and the skills (`piquette skill show piquette-author --file cookbooks/roster.md`, `piquette skill show piquette --file references/config.md`) for the field-by-field reference.
 
 ### `watch.allowed_authors` — the label isn't the trust boundary
 
@@ -1036,7 +1069,7 @@ opens one pane per claimed issue tailing that run's trace, and marks each
 pane working, blocked, or in review as the issue moves. Start `piquette watch`
 from a herdr pane; outside herdr the channel is skipped with one warning.
 It's display only: no agent ever touches herdr, and piquette never reads it back
-to decide anything. See the installed skill's `cookbooks/herdr.md`.
+to decide anything. See `piquette skill show piquette --file cookbooks/herdr.md`.
 
 ```yaml
 notifications:
@@ -1045,8 +1078,7 @@ notifications:
     - kind: herdr            # defaults to events: all
 ```
 
-Full field reference: `piquette install-skill`'s installed skill
-(`references/config.md`).
+Full field reference: `piquette skill show piquette --file references/config.md`.
 
 ## Observability
 
@@ -1059,7 +1091,7 @@ piquette ui                           # browser-based visualizer over the trace
 piquette events <adw_id> --follow    # live event stream, tailable
 ```
 
-The default backend is local SQLite (`.piquette/data/piquette.db`) — nothing leaves the machine. `observability.db` can instead be pointed at a remote Cloudflare D1 database (`{kind: d1, database_id, ...}`, offered as an `piquette init` advanced option): in that mode the **complete trace** — the raw request text, tool arguments and results, envelope payloads, and gate violation details, not just spans or metadata — is written to Cloudflare over the network on every run, and the local-only guarantee above does not hold. Pick D1 only when you're comfortable with your trace data (including prompts and tool arguments) leaving the machine; stay on the default SQLite backend otherwise. See `assets/skill/references/observability.md`'s D1 section for what's sent and how the backend is selected.
+The default backend is local SQLite (`.piquette/data/piquette.db`) — nothing leaves the machine. `observability.db` can instead be pointed at a remote Cloudflare D1 database (`{kind: d1, database_id, ...}`, offered as an `piquette init` advanced option): in that mode the **complete trace** — the raw request text, tool arguments and results, envelope payloads, and gate violation details, not just spans or metadata — is written to Cloudflare over the network on every run, and the local-only guarantee above does not hold. Pick D1 only when you're comfortable with your trace data (including prompts and tool arguments) leaving the machine; stay on the default SQLite backend otherwise. See `assets/skills/piquette/references/observability.md`'s D1 section for what's sent and how the backend is selected.
 
 Separately, and orthogonally to which trace-db backend you choose, you can export **spans only** (phase/agent/tool timing and allowlisted metadata, never prompts or tool arguments) to an OpenTelemetry collector for integration with a trace UI or observability platform:
 
@@ -1078,7 +1110,7 @@ OTEL export is **explicit config only** — an unrelated shell variable cannot b
 
 **OTEL attribute allowlist**: only phase name/kind/owner/status, chain name, adw_id, agent name/model/coding_agent, gate name + passed + violation count, token counts and cost, and durations. Prompts, envelopes, tool arguments, and your source code never leave *via OTEL* — that guarantee is enforced in code, not just in documentation, and it holds regardless of trace-db backend. It is separate from the trace-db egress question above: a `kind: d1` trace db ships the full trace (prompts, tool arguments, envelope payloads) to Cloudflare even with OTEL left unconfigured.
 
-See `assets/skill/references/config.md`'s `observability` section for the full field reference.
+See `assets/skills/piquette/references/config.md`'s `observability` section for the full field reference.
 
 ## Verification receipts (store)
 
@@ -1167,7 +1199,7 @@ piquette-cli/
 └── assets/
     ├── defaults/    # the packaged default roster
     ├── prompts/     # default system.md + user.md per starter agent
-    └── skill/       # a Claude Code skill — `piquette init` installs it by default (`--no-skills` to opt out), or `piquette install-skill` by hand
+    └── skills/      # agent skills (one folder each) — `piquette init` installs them into .claude/skills + .agents/skills by default (`--no-skills` to opt out), or `piquette install-skill` by hand
 ```
 
 There's no template stamped into your repo. Everything above ships inside the installed npm package; a repo you run `piquette` against only ever gains a `.piquette/` directory, and only if you ask for one.

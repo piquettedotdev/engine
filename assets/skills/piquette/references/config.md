@@ -651,7 +651,7 @@ will stall — not "all tools."
 
 ## Write permissions — `writes` and `protected_files`
 
-Full mechanism and rationale: `roster.md`'s "Write permissions" section.
+Full mechanism and rationale: `../piquette-author/cookbooks/roster.md`'s "Write permissions" section.
 Short version: `permissions.ts` fingerprints the working tree's diff before
 and after an agent runs; anything outside its allowlist is rolled back
 (reverting a previously-clean file counts as a change; a file that was
@@ -664,12 +664,12 @@ Kept as a field for config-shape stability, but it must be empty. Each
 backend's own equivalent (Flue: extra tools/subagents via `useTool()`/
 `useSandbox()`; Claude Code: an MCP server or plugin) is an engine-level
 change made inside that backend's own module, not config — see
-`authoring_chains.md`.
+`../piquette-author/cookbooks/authoring_chains.md`.
 
 ## Pointing `claude_code` at Ollama
 
 Set `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (local or cloud Ollama)
-before running `piquette`; see `roster.md`'s "Coding agent backends" section for
+before running `piquette`; see `../piquette-author/cookbooks/roster.md`'s "Coding agent backends" section for
 the exact commands. `piquette doctor` probes `ANTHROPIC_BASE_URL` (informational
 — a down endpoint or wrong path is reported, never a hard failure) and flags
 a base URL that already ends in `/v1` as a likely double-path mistake, since
