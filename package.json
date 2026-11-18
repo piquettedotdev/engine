@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/piquette-ai/engine.git"
+    "url": "git+https://github.com/piquettedotdev/engine.git"
   },
   "bin": {
     "piquette": "dist/cli/bin.js"
