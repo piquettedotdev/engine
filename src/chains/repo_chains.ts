@@ -247,6 +247,24 @@ export const STEP_SPECS: Record<string, StepSpec> = {
     (p) => steps.reviseLoop(p),
   ),
 
+  // The verification pair (#159). Both are no-ops without a `receipts:`
+  // block, exactly as in the built-in chains, so a repo chain can carry them
+  // unconditionally. proveHead's `suite` is the suite re-run after a
+  // proof-driven fix; it defaults here for the same reason fixLoop's does
+  // (a yaml `{}` never reaches the factory's own default).
+  proveBase: spec({ description: Description }, (p) => steps.proveBase(p)),
+
+  proveHead: spec(
+    {
+      suite: Suite,
+      owner: Owner,
+      description: Description,
+      fixDescription: Description,
+      fix: v.optional(v.boolean("fix must be true or false")),
+    },
+    (p) => steps.proveHead({ ...p, suite: p.suite ?? "test" }),
+  ),
+
   commit: spec({ onlyIfAccepted: v.optional(v.boolean("onlyIfAccepted must be true or false")), description: Description }, (p) =>
     steps.commit(p),
   ),

@@ -254,6 +254,58 @@ test("reviseLoop's retestSuite loads from yaml and derives the same phases and r
   assert.deepEqual(resolveRequiredSuites(loaded, {}), resolveRequiredSuites(handWritten, {}));
 });
 
+test("proveBase/proveHead load from yaml and derive the same phases and requiredSuites as plan-build-test's composition", () => {
+  const { chains, problems } = load(
+    [
+      "name: ship-it-proved",
+      "describe: plan, prove, build, test, prove, land",
+      "steps:",
+      "  - step: request",
+      "  - step: plan",
+      "  - step: proveBase",
+      "  - step: build",
+      "  - step: fixLoop",
+      "    suite: test",
+      "  - step: proveHead",
+      "    suite: test",
+      "  - step: commit",
+      "    onlyIfAccepted: true",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(problems, [], "a valid file must produce no problems");
+  const loaded = chains[0]!;
+  const handWritten = stepChain("ship-it-proved", "plan, prove, build, test, prove, land", [
+    steps.request(),
+    steps.plan(),
+    steps.proveBase(),
+    steps.build(),
+    steps.fixLoop({ suite: "test" }),
+    steps.proveHead({ suite: "test" }),
+    steps.commit({ onlyIfAccepted: true }),
+  ]);
+  assert.equal(loaded.phases, handWritten.phases);
+  assert.deepEqual(resolveRequiredAgents(loaded, {}), resolveRequiredAgents(handWritten, {}));
+  assert.deepEqual(resolveRequiredSuites(loaded, {}), resolveRequiredSuites(handWritten, {}));
+});
+
+test("proveHead with no params means proveHead({ suite: \"test\" }), as fixLoop's bare form means fixLoop({ suite: \"test\" })", () => {
+  const { chains, problems } = load(["name: bare-prove", "describe: x", "steps:", "  - step: proveHead", ""].join("\n"));
+  assert.deepEqual(problems, []);
+  const handWritten = stepChain("bare-prove", "x", [steps.proveHead({ suite: "test" })]);
+  assert.equal(chains[0]!.phases, handWritten.phases);
+  assert.deepEqual(resolveRequiredSuites(chains[0]!, {}), resolveRequiredSuites(handWritten, {}));
+});
+
+test("proveHead's params are validated like every other step's", () => {
+  const badFix = load(["name: bad-fix", "describe: x", "steps:", "  - step: proveHead", '    fix: "no"', ""].join("\n"));
+  assert.equal(badFix.chains.length, 0);
+  assert.match(badFix.problems[0]!.message, /fix must be true or false/);
+  const unknown = load(["name: bad-param", "describe: x", "steps:", "  - step: proveBase", "    suite: test", ""].join("\n"));
+  assert.equal(unknown.chains.length, 0);
+  assert.match(unknown.problems[0]!.message, /unknown param\(s\) "suite" — proveBase accepts: description/);
+});
+
 test("reviseLoop with no retestSuite loads clean and requires no suite: the verifiedSuite fallback is runtime-only", () => {
   const { chains, problems } = load(["name: ship-it-no-retest", "describe: revise, no suite", "steps:", "  - step: reviseLoop", ""].join("\n"));
   assert.deepEqual(problems, []);
