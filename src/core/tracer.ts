@@ -426,6 +426,33 @@ export class Tracer {
     return row?.m ?? 0;
   }
 
+  /**
+   * Reads for `watch.resume_at_failed_phase`: the phases a previous run wrote
+   * for this session with `from < seq <= to`, in order. Reading only — a
+   * resumed run never edits the rows it learns from.
+   */
+  async phasesInRange(adwId: string, from: number, to: number): Promise<Array<{ phase_id: string; seq: number; name: string; owner: string | null; status: string }>> {
+    return (await this.db
+      .query("SELECT phase_id, seq, name, owner, status FROM phases WHERE adw_id = ? AND seq > ? AND seq <= ? ORDER BY seq, rowid")
+      .all(adwId, from, to)) as Array<{ phase_id: string; seq: number; name: string; owner: string | null; status: string }>;
+  }
+
+  /** The newest schema-valid envelope the phase persisted, or null. */
+  async latestValidEnvelope(phaseId: string): Promise<{ agent: string | null; output_type: string; payload_json: string } | null> {
+    const row = (await this.db
+      .query("SELECT agent, output_type, payload_json FROM envelopes WHERE phase_id = ? AND valid = 1 AND payload_json IS NOT NULL ORDER BY rowid DESC LIMIT 1")
+      .get(phaseId)) as { agent: string | null; output_type: string; payload_json: string } | undefined;
+    return row ?? null;
+  }
+
+  /** The payloads of the phase's `log` events (`PhaseHandle.log`), oldest first. */
+  async phaseLogPayloads(phaseId: string): Promise<string[]> {
+    const rows = (await this.db.query("SELECT payload_json FROM events WHERE phase_id = ? AND type = 'log' AND payload_json IS NOT NULL ORDER BY rowid").all(phaseId)) as Array<{
+      payload_json: string;
+    }>;
+    return rows.map((r) => r.payload_json);
+  }
+
   async phaseUpsert(phase: Phase): Promise<void> {
     const p = phase.params;
     await this.db

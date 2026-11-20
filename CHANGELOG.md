@@ -8,6 +8,44 @@ record independent of the commit log.
 
 ## Unreleased
 
+### Added — machine-level env file (#13)
+
+- **`~/.piquette/env` holds credentials shared by every repo on the machine.**
+  Set the sync Access token, receipt-store keys or D1 token once instead of
+  in each repo's `.env`. Precedence is the real shell, then the repo `.env`,
+  then this file, then `piquette.config.yaml`'s `env:`. The file lives in
+  `$PIQUETTE_CONFIG_HOME` when that is set. It accepts `KEY=value` and
+  `export KEY=value` lines, does no `$VAR` expansion, and is read only if
+  you own it and nobody else can write it (a group- or world-writable file
+  is refused, since an env file can set `PIQUETTE_CLAUDE_CMD`).
+- **A repo can never pick the file.** `PIQUETTE_CONFIG_HOME`, `HOME` and
+  `USERPROFILE` are ignored in it, same as in a repo `.env`.
+- **`piquette doctor` says where each credential came from** (shell, repo
+  `.env`, machine env, config env) and adds "machine env" checks for the
+  path, loaded keys, loose permissions and refusal. It never prints values.
+
+### Added — resume a blocked issue from its preserved work (#14)
+
+- **`piquette init` asks about both options.** Two opt-in, default-no
+  questions in the watch section (the second only after a yes to the first),
+  and the `piquette-setup` and `piquette-configure` skills mention them.
+- **`watch.resume_from_wip: true` starts a re-claimed issue from its failed
+  run's work.** Off by default; off is unchanged. The failed run's work is
+  pushed to `<branch>-wip-<sha>` (a new name per failure, so a second failure
+  cannot overwrite the first) and the issue marker records it. The next claim
+  checks out that work, merges the latest base, and tells the agent what the
+  failed attempt got to. A missing or moved ref, a conflicting base merge, a
+  protected-file change in the diff or a marker piquette did not write all
+  fall back to a fresh start from `origin/<base>`.
+- **`watch.resume_at_failed_phase: true` (needs `resume_from_wip`) also skips
+  the leading phases already on record.** `plan`, `build` and a usable
+  `prove_base` are restored from the local trace db instead of re-run;
+  gates, verification and commit always run again, and a proof taken on
+  resumed work is flagged. Without usable local records, or for graph and
+  imperative chains, every phase runs on the preserved work.
+- **`piquette doctor`** reports the resume posture and fails
+  `resume_at_failed_phase` without `resume_from_wip`.
+
 ### Changed — project renamed from Super Portable Software Factory to Piquette
 
 - **The package is now `@piquette/engine`** (was `@gr8ful/spf`), the repo is

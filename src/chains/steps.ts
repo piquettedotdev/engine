@@ -41,6 +41,7 @@
  *    line, never a phase that blows up ten minutes into an unattended run.
  */
 
+import { parse as parseSchema } from "valibot";
 import { evidenceLimits } from "../core/journey_evidence.ts";
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -84,7 +85,7 @@ import { resolveFindingTriage, triageReviewFindings } from "./finding_triage.ts"
 import { loadJourneysFile, type JourneySpec } from "../core/journeys.ts";
 import { proofStore, prove, segmentForRun, type ProveResult } from "../core/prove.ts";
 import { AgentBrowserTtydRecorder } from "../core/recorder.ts";
-import { treeOf } from "../core/receipt.ts";
+import { readReceipt, treeOf } from "../core/receipt.ts";
 import {
   decideVerification,
   loadNonNegotiables,
@@ -143,6 +144,8 @@ export interface ChainState {
    * and the outcome tells a person why (see core/verification.ts).
    */
   verification?: VerificationState;
+  /** True when this run started from a previous attempt's preserved work (`ChainContext.resume`): the tree is not the base. */
+  resumedFromWip?: boolean;
 }
 
 export interface VerificationState {
@@ -216,17 +219,46 @@ export interface Step {
    * `steps.test.ts` pins that every factory writing `state.accepted` sets it.
    */
   gate?: boolean;
+  /**
+   * `watch.resume_at_failed_phase`: how a LEADING step whose previous run
+   * already produced a usable result may be skipped (see `runSteps`). Declared
+   * only by agent steps and `proveBase` — never by a gating, verifying or
+   * committing step, which always run again on the resumed tree.
+   */
+  resume?: StepResume;
+  /** A step that always re-runs but does not end the skippable prefix (`request`: it records the new prompt). */
+  resumeNeutral?: true;
+}
+
+/** A previous run's phase row, as `runSteps` reads it back for a resume. */
+export interface PriorPhase {
+  phase_id: string;
+  seq: number;
+  name: string;
+  owner: string | null;
+  status: string;
+}
+
+export interface StepResume {
+  /** The phase name this step writes. */
+  phase: string;
+  /** True when running this step now would write no phase at all (so it is skipped without consuming a prior row). */
+  absent?: (run: Run, state: ChainState) => boolean;
+  /** Restore the state the step would have left behind from the prior phase's record. False = cannot, so run the step. Never throws. */
+  rehydrate: (run: Run, state: ChainState, prior: PriorPhase) => Promise<boolean>;
 }
 
 function makeStep(
   fn: (run: Run, state: ChainState) => Promise<void>,
-  meta: { requiredAgents?: Step["requiredAgents"]; requiredSuites?: Step["requiredSuites"]; label?: string; gate?: boolean } = {},
+  meta: { requiredAgents?: Step["requiredAgents"]; requiredSuites?: Step["requiredSuites"]; label?: string; gate?: boolean; resume?: StepResume; resumeNeutral?: true } = {},
 ): Step {
   const step = fn as Step;
   step.requiredAgents = meta.requiredAgents;
   step.requiredSuites = meta.requiredSuites;
   step.label = meta.label;
   if (meta.gate) step.gate = true;
+  if (meta.resume) step.resume = meta.resume;
+  if (meta.resumeNeutral) step.resumeNeutral = true;
   return step;
 }
 
@@ -674,7 +706,7 @@ export function request(opts: { description?: string; logBaseline?: boolean } = 
       },
     );
   };
-  return makeStep(fn, { label: "engineer(request)" });
+  return makeStep(fn, { label: "engineer(request)", resumeNeutral: true });
 }
 
 /** One agent phase: prompt in, typed envelope out, `previous` is whatever the prior step left in state. */
@@ -694,7 +726,23 @@ function agentStep<T extends EnvelopeBase>(opts: {
     );
     state.previous = envelope;
   };
-  return makeStep(fn, { requiredAgents: [opts.owner], label: opts.label ?? opts.owner });
+  return makeStep(fn, {
+    requiredAgents: [opts.owner],
+    label: opts.label ?? opts.owner,
+    resume: { phase: opts.name, rehydrate: (run, state, prior) => rehydrateEnvelope(run, state, prior, opts.output_type, opts.owner) },
+  });
+}
+
+/** `StepResume.rehydrate` for an agent step: `state.previous` becomes the prior phase's newest valid envelope, re-parsed with the step's own schema and from the same agent. */
+async function rehydrateEnvelope<T extends EnvelopeBase>(run: Run, state: ChainState, prior: PriorPhase, type: EnvelopeType<T>, owner: string): Promise<boolean> {
+  try {
+    const row = await run.tracer.latestValidEnvelope(prior.phase_id);
+    if (!row || row.output_type !== type.name || (row.agent && row.agent !== owner)) return false;
+    state.previous = parseSchema(type.schema, JSON.parse(row.payload_json));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -787,7 +835,11 @@ export function promptOnly(opts: { description?: string; retries?: number; extra
     );
     state.previous = envelope;
   };
-  return makeStep(fn, { requiredAgents: (options) => [options["agent"] ?? "builder"], label: "<agent>" });
+  return makeStep(fn, {
+    requiredAgents: (options) => [options["agent"] ?? "builder"],
+    label: "<agent>",
+    resume: { phase: "prompt", rehydrate: (run, state, prior) => rehydrateEnvelope(run, state, prior, GenericOutput, state.options["agent"] ?? "builder") },
+  });
 }
 
 /**
@@ -1088,10 +1140,40 @@ export function proveBase(opts: { description?: string } = {}): Step {
         if (v.base?.receipt.verdict === "PASS") {
           await run.console.note("[piquette] verification: the journeys already pass before the change — they won't show this work did anything (flagged, not blocking)");
         }
+        if (state.resumedFromWip) {
+          // The tree is a previous attempt's work, not the base: this proof can't say what the journeys did before the change.
+          v.problems.push("The proof before the change ran on resumed work, not on the base, so it does not show the journeys failing before the change.");
+        }
       },
     );
   };
-  return makeStep(fn, { label: "code(prove: before)" });
+  return makeStep(fn, {
+    label: "code(prove: before)",
+    resume: {
+      phase: "prove_base",
+      // Nothing to run now: no receipts, or no journeys declared — same early returns as `fn`.
+      absent: (run, state) => {
+        if (!run.cfg.receipts) return true;
+        const ver = verificationState(run, state);
+        return !ver.journeysFile || ver.journeys.length === 0;
+      },
+      rehydrate: async (run, state, prior) => {
+        try {
+          const ver = verificationState(run, state);
+          if (!ver.journeysFile || ver.journeys.length === 0) return false;
+          const logged = (await run.tracer.phaseLogPayloads(prior.phase_id)).map((p) => JSON.parse(p) as { receipt?: unknown }).find((p) => typeof p.receipt === "string");
+          if (!logged) return false; // the prior proof could not run: it left no receipt, so re-run it
+          const key = logged.receipt as string;
+          const receipt = await readReceipt(proofStore(run.cfg, run.repo_root), key);
+          if (!receipt || receipt.stage !== "base" || receipt.run_id !== run.adw_id) return false;
+          ver.base = { receipt, key };
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    },
+  });
 }
 
 /**
@@ -1681,6 +1763,68 @@ export function derivePhases(steps: Step[]): string {
 // ── the driver ────────────────────────────────────────────────────────────
 
 /**
+ * `watch.resume_at_failed_phase`: the leading steps a failed run already
+ * completed. Returns null — and so skips nothing — unless the rows are exactly
+ * what a clean prefix needs: the trace still ends at `range.to` (no other claim
+ * wrote phases since), and the failed run opened with a successful `request`.
+ * `skip` then walks the step list with a cursor over those rows: a step that
+ * declares `resume` and whose row has the same name, succeeded and rehydrates
+ * is skipped; the first step that does not match ends the prefix for good, so
+ * everything from there runs normally. Gating, verifying and committing steps
+ * declare nothing, so they always run.
+ */
+async function loadResumePrefix(run: Run, range: { from: number; to: number }): Promise<{ skip: (step: Step, run: Run, state: ChainState) => Promise<boolean> } | null> {
+  try {
+    if ((await run.tracer.maxPhaseSeq(run.adw_id)) !== range.to) return null;
+    const prior = await run.tracer.phasesInRange(run.adw_id, range.from, range.to);
+    if (prior[0]?.name !== "request" || prior[0].status !== "success") return null;
+    let cursor = 0;
+    let live = true;
+    return {
+      skip: async (step, r, state) => {
+        if (!live) return false;
+        try {
+          if (step.resumeNeutral) {
+            if (prior[cursor]?.name === "request") cursor += 1;
+            else live = false;
+            return false;
+          }
+          const spec = step.resume;
+          const row = prior[cursor];
+          if (spec?.absent?.(r, state) && row?.name !== spec.phase) return true; // would write no phase now: nothing to skip or run
+          if (spec && row && row.name === spec.phase && row.status === "success" && (await spec.rehydrate(r, state, row))) {
+            cursor += 1;
+            await r.tracer.event(makeEventRecord({ adw_id: r.adw_id, phase_id: "", type: "log", name: "resume_skip", payload: { phase: row.name, from_phase_id: row.phase_id } }));
+            await r.console.note(`[piquette] resume: skipping ${row.name} — its result from the previous attempt is still on record`);
+            return true;
+          }
+        } catch {
+          // fall through: end the prefix, run the step
+        }
+        live = false;
+        return false;
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The declarative driver's loop. With `resumePhases` (`watch.resume_at_failed_phase`)
+ * it first skips the leading steps the failed run already completed; every
+ * problem (no rows, a mismatch, a DB error) just means no prefix is skipped,
+ * so the loop runs every step. Exported for `steps_resume.test.ts`.
+ */
+export async function runStepList(run: Run, state: ChainState, steps: Step[], resumePhases?: { from: number; to: number }): Promise<void> {
+  const prefix = resumePhases ? await loadResumePrefix(run, resumePhases) : null;
+  for (const step of steps) {
+    if (prefix && (await prefix.skip(step, run, state))) continue;
+    await step(run, state);
+  }
+}
+
+/**
  * Run a chain's step list start to finish: prologue, every step in order,
  * then run.finish().
  *
@@ -1700,12 +1844,11 @@ export async function runSteps(
 ): Promise<number> {
   const run = await startRun(ctx, requiredAgents, requiredSuites);
   const state = makeState(ctx.prompt, options, ctx.issue_id ?? null);
+  if (ctx.resume) state.resumedFromWip = true;
   if (graph) {
     await walkGraph(run, state, graph);
   } else {
-    for (const step of steps) {
-      await step(run, state);
-    }
+    await runStepList(run, state, steps, ctx.resume?.phases);
   }
   return await run.finish(state.accepted, state.reason);
 }

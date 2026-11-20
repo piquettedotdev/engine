@@ -199,6 +199,11 @@ function matches(p: string, pattern: string): boolean {
   return p === pattern;
 }
 
+/** The subset of `paths` matching any of `patterns` (a `defaults.protected_files` list) — what `watch.resume_from_wip` checks a preserved tip's diff against. */
+export function protectedPathsIn(paths: string[], patterns: string[]): string[] {
+  return paths.filter((p) => patterns.some((pattern) => matches(p, pattern)));
+}
+
 /**
  * The session runtime, which EVERY agent must be able to write.
  *

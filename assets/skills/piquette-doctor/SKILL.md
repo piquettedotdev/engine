@@ -39,7 +39,7 @@ For each check:
   example, model pins on planner/reviewer/documenter).
 - **Missing env var** (`provider_key`, `watch_credentials`,
   `notifications_channel`, `receipt_store`, `env_file`). The user adds the
-  key to `.env` themselves. Name the exact variable from `detail`. Never ask
+  key to `.env` (or the machine-wide `~/.piquette/env`) themselves. Name the exact variable from `detail`. Never ask
   for its value in chat, and never write it.
 - **Otherwise.** Follow `fix`. For config fields, look the key up in
   `../piquette/references/config.md` and edit only that key in

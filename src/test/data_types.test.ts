@@ -375,6 +375,22 @@ test("watch.fanout defaults — a watch: block with no fanout: key parses to {n:
   assert.deepEqual(parsed.fanout, { n: 1, concurrency: 2 });
 });
 
+test("watch.resume_from_wip and resume_at_failed_phase default to false and survive loadConfig's merge", () => {
+  const parsed = v.parse(WatchConfigSchema, {});
+  assert.equal(parsed.resume_from_wip, false);
+  assert.equal(parsed.resume_at_failed_phase, false);
+  const dir = mkdtempSync(join(tmpdir(), "piquette-watch-resume-merge-test-"));
+  try {
+    const configPath = join(dir, "piquette.config.yaml");
+    writeFileSync(configPath, "watch:\n  resume_from_wip: true\n  resume_at_failed_phase: true\n");
+    const cfg = loadConfig([configPath]);
+    assert.equal(cfg.watch.resume_from_wip, true);
+    assert.equal(cfg.watch.resume_at_failed_phase, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("watch.fanout survives loadConfig's merge for a single config file — not stripped by mergeRawConfig or by WatchConfigSchema", () => {
   const dir = mkdtempSync(join(tmpdir(), "piquette-watch-fanout-merge-test-"));
   try {

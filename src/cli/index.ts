@@ -13,6 +13,7 @@ import * as notify from "../core/notify/notifier.ts";
 import * as otel from "../core/otel.ts";
 import * as otelMetrics from "../core/otel_metrics.ts";
 import * as paths from "../core/paths.ts";
+import { loadStartupEnv } from "../core/env_layers.ts";
 import * as sandbox from "../core/sandbox.ts";
 import { allChains, findChain, registerRepoChains, repoChainProblems } from "../chains/index.ts";
 import { loadRepoChains } from "../chains/repo_chains.ts";
@@ -138,18 +139,9 @@ export async function main(): Promise<void> {
   // loadEnvFile() (ENOENT when there's no .env), which is exactly what the
   // catch below still guards.
   const anchor = paths.resolveAnchor(findCwdFlag(rest));
-  // The root `.env` is repo-controlled: it must not relocate the machine config layer (PIQUETTE_CONFIG_HOME, HOME), which is
-  // where `sync.on_watch` and the sync endpoint are trusted from (#221). Snapshot, load, restore.
-  const protectedBefore = [...agents.PROTECTED_CONFIG_ENV].map((key) => [key, process.env[key]] as const);
-  try {
-    process.loadEnvFile(path.join(anchor.repo_root, ".env"));
-  } catch {
-    // no .env there — fine, nothing to load
-  }
-  for (const [key, value] of protectedBefore) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  // Env layers: shell > repo `.env` > machine env file (`~/.piquette/env`) > `cfg.env` (applied below). The root `.env` is
+  // repo-controlled and must not relocate the machine layer (#221); see core/env_layers.ts.
+  loadStartupEnv(anchor.repo_root);
 
   // `cfg.env` (piquette.config.yaml's declarative env-var defaults — see
   // data_types.ts's SFConfigSchema doc comment) has to land in process.env

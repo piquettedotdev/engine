@@ -18,7 +18,7 @@ mkdir -p ~/.piquette/watch/core
 echo /Users/me/dev/core > ~/.piquette/watch/core/repo_dir
 ```
 
-Optional shared env (tokens and so on) goes in `~/.piquette/env`; it is sourced after `restart.env` when present. A directory without a valid `repo_dir` is skipped, and each skip is logged. Daemon names may only use letters, digits, `.`, `_` and `-`. If no daemon is configured the scripts refuse to run.
+Optional shared env (tokens and so on) goes in `~/.piquette/env`; it is sourced after `restart.env` when present. piquette also loads this file itself (honoring `PIQUETTE_CONFIG_HOME`), below the shell and the repo `.env`, and refuses it if group or others can write it, so keep it `chmod 600`. A directory without a valid `repo_dir` is skipped, and each skip is logged. Daemon names may only use letters, digits, `.`, `_` and `-`. If no daemon is configured the scripts refuse to run.
 
 **Existing factory?** Before the first `upgrade.sh` or `reload.sh`, create a `repo_dir` for every `piquette watch` already running on the machine. The drain only touches daemons whose working directory matches a configured `repo_dir`, and refuses to start if any running `piquette watch` does not match one (it could not bring that daemon back). piquette also creates its own folders under `~/.piquette/watch/<repo>/`; those are skipped unless they hold a `repo_dir`.
 

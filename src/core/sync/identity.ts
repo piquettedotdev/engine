@@ -17,7 +17,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SFConfig, SyncRoutingTrustShape } from "../data_types.ts";
-import { machineConfigPath, type RepoAnchor } from "../paths.ts";
+import { machineConfigDir, type RepoAnchor } from "../paths.ts";
 
 export interface FactoryIdentity {
   factory_id: string;
@@ -29,7 +29,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** The machine config home (`$PIQUETTE_CONFIG_HOME`, default `~/.piquette`): where this machine's factory identity lives. */
 export function machineHome(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
-  return path.dirname(machineConfigPath(env, home));
+  return machineConfigDir(env, home);
 }
 
 function readFactoryId(file: string): string | undefined {

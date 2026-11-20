@@ -75,6 +75,16 @@ export interface ChainContext {
    */
   chain_source?: string;
   /**
+   * Set only by `piquette watch` with `watch.resume_from_wip` on, when this run
+   * starts from a previous attempt's preserved work instead of from the base.
+   * Its presence tells `steps.proveBase` the tree is not the base (so its
+   * "before" proof is flagged, never trusted). `phases` is present only with
+   * `watch.resume_at_failed_phase`: the (from, to] phase-seq range the failed
+   * run wrote, which `steps.runSteps` may skip the leading read-only phases of.
+   * Ignored by imperative (`run`) and graph chains. Omitted everywhere else.
+   */
+  resume?: { phases?: { from: number; to: number } };
+  /**
    * The tree's state before the work this run belongs to started, as
    * `stagingSnapshot()` fingerprints it. `steps.startRun()` records it as
    * the run's staging baseline instead of snapshotting the tree itself.

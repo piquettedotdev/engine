@@ -338,6 +338,29 @@ export interface WatchMarker {
     extra_notify_fields?: Array<[string, string]>;
     wip_branch?: string;
   };
+  /**
+   * Set only when `watch.resume_from_wip` is on and a failed run's work was
+   * pushed: where that work lives, so the next claim of the same issue can
+   * start from it (`core/watch_resume.ts`). References only — no free-text
+   * failure detail, because a tracker comment is forgeable; the failure text
+   * the resumed agent sees comes from the local trace database. Every field is
+   * validated before use (`validateWipMarker`). `phases` is the (from, to]
+   * phase-seq range the failed run wrote, present only when the chain returned
+   * normally. Written just before the blocked transition; carried into the next
+   * claim's own marker while a resumed run is in flight; dropped on success.
+   */
+  wip?: WipRef;
+}
+
+/** See `WatchMarker.wip`. */
+export interface WipRef {
+  branch: string;
+  sha: string;
+  adw_id: string;
+  chain: string;
+  base_sha: string;
+  at: string;
+  phases?: { from: number; to: number };
 }
 
 /** What `ensureLabels()` actually did, per label — for `piquette watch init`'s report. */

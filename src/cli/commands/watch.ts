@@ -27,6 +27,7 @@ import { configOrigins } from "../../core/config_origins.ts";
 import { runSyncPass } from "../../core/sync/client.ts";
 import type { SyncColumnCache } from "../../core/sync/source.ts";
 import { createSyncOnWatch, type SyncOnWatch } from "../../core/sync/on_watch.ts";
+import type { PriorRunSummary } from "../../core/watch_resume.ts";
 import { createWatchState, tick, type ClosingRefsConfig, type ChainRunResult, type RefinedQuestionRef, type RefineRunResult, type WatchDeps, type WatchFanoutDeps } from "../../core/watch.ts";
 import { chainRouteReplay, resolveRouteWhen, routeChain, type RoutableChain } from "../../core/chain_router.ts";
 import { createDecider, findRecordedDecision, parseDecisionExtras, traceDecisionRecorder, type Decision, type Decider, type DecisionClient } from "../../core/decisions.ts";
@@ -402,6 +403,55 @@ async function detailFromFailedPhase(cfg: SFConfig, cwd: string, adwId: string, 
     await db?.close();
   }
   return detail;
+}
+
+/** #14: the highest phase seq recorded for `adwId` (0 when none), or undefined when the trace db cannot be read. */
+async function maxPhaseSeqFor(cfg: SFConfig, cwd: string, adwId: string): Promise<number | undefined> {
+  let db: SfDb | undefined;
+  try {
+    const wtAnchor = paths.resolveAnchor(cwd);
+    const wtDataPaths = paths.resolveDataPaths(wtAnchor, cfg.defaults.data_dir, cfg.observability.db);
+    if (!(await SfDb.exists(wtDataPaths))) return 0; // a first-ever run: nothing recorded yet
+    db = await SfDb.open(wtDataPaths.db, wtDataPaths.sessions_dir);
+    return Math.max(0, ...(await db.phases(adwId)).map((p) => p.seq ?? 0));
+  } catch {
+    return undefined;
+  } finally {
+    await db?.close();
+  }
+}
+
+/**
+ * #14: what a failed run got to, for the resumed prompt — the first failed phase in the (from, to]
+ * seq range, its error, and (a `prove_*` phase) the `next` list its log event carried. Read from the
+ * main repo's trace db (worktrees symlink to it). Best-effort: `undefined` on any miss, never thrown.
+ */
+async function priorRunFor(dataPaths: DataPaths, adwId: string, range: { from: number; to: number }): Promise<PriorRunSummary | undefined> {
+  let db: SfDb | undefined;
+  try {
+    db = await SfDb.open(dataPaths.db, dataPaths.sessions_dir);
+    const failed = (await db.phases(adwId)).find((p) => p.status === "fail" && (p.seq ?? 0) > range.from && (p.seq ?? 0) <= range.to);
+    if (!failed) return undefined;
+    const summary: PriorRunSummary = { ...(failed.name ? { phase: failed.name } : {}), ...(failed.error ? { error: failed.error } : {}) };
+    if (failed.name?.startsWith("prove")) {
+      let after = 0;
+      for (let page = 0; page < 40; page++) {
+        const res = await db.events(adwId, after, 500);
+        for (const e of res.events) {
+          if (e.phase_id !== failed.phase_id || e.type !== "log" || !e.payload_json) continue;
+          const next = (JSON.parse(e.payload_json) as { next?: unknown }).next;
+          if (Array.isArray(next)) summary.next = next.filter((n): n is string => typeof n === "string");
+        }
+        if (!res.has_more) break;
+        after = res.cursor;
+      }
+    }
+    return summary;
+  } catch {
+    return undefined;
+  } finally {
+    await db?.close();
+  }
 }
 
 /**
@@ -1109,6 +1159,12 @@ export async function watchCommand(argv: string[]): Promise<number> {
     }
   }
 
+  // #14: phase resume rides on resume-from-WIP; setting it alone would silently do nothing.
+  if (cfg.watch.resume_at_failed_phase && !cfg.watch.resume_from_wip) {
+    console.error("watch.resume_at_failed_phase requires watch.resume_from_wip: true — set both, or remove resume_at_failed_phase.");
+    return 1;
+  }
+
   // watch.fanout.n > 1 startup gates — all guarded so watch.fanout.n: 1 (the
   // default) reaches none of them, and a bad configuration stops the daemon
   // before it starts rather than failing silently every tick.
@@ -1235,7 +1291,7 @@ export async function watchCommand(argv: string[]): Promise<number> {
     excludePiquetteDataFromGit(worktreePath);
   }
 
-  const runChain = async (opts: { prompt: string; cwd: string; adwId: string; chainOptions: Record<string, string>; chain?: string; links?: RunLinks }): Promise<ChainRunResult> => {
+  const runChain = async (opts: Parameters<WatchDeps["runChain"]>[0]): Promise<ChainRunResult> => {
     // WATCH DIVERGENCE: `findChain` here resolves against the registry
     // `cli/index.ts`'s `main()` built ONCE, at daemon start, from the MAIN
     // repo anchor (the `registerRepoChains(...)` call before the command
@@ -1272,6 +1328,15 @@ export async function watchCommand(argv: string[]): Promise<number> {
       baseline_tree: {},
       ...(opts.links ? { links: opts.links } : {}),
     };
+    // #14: a run resumed from preserved work says so (proveBase then flags its "before" proof). Phase skipping
+    // only exists in the declarative step driver — an imperative or graph chain runs every phase on the preserved work.
+    let phaseRangeBefore: number | undefined;
+    if (opts.resume) {
+      const phases = chainDef.run || chainDef.graph ? undefined : opts.resume.phases;
+      if (opts.resume.phases && !phases) deps.log(`watch: ${opts.adwId}: phase resume is not supported for chain "${chainDef.name}" — running every phase on the preserved work`);
+      ctx.resume = phases ? { phases } : {};
+    }
+    if (cfg.watch.resume_from_wip) phaseRangeBefore = await maxPhaseSeqFor(cfg, opts.cwd, opts.adwId);
     // `opts.chainOptions` is `watch.chain_options` (see WatchConfigSchema's
     // doc comment), threaded down from `deps.chainOptions` by
     // `core/watch.ts`'s `runIssue` — the same options-map shape an
@@ -1307,7 +1372,10 @@ export async function watchCommand(argv: string[]): Promise<number> {
     // builder failure — this is the one place that tells `runIssueSingle`
     // apart "ask a human" from an ordinary crash/error.
     const buildQuestions = await buildQuestionsFor(cfg, opts.cwd, opts.adwId);
-    return { accepted: false, adwId: opts.adwId, detail, reviewRequired, ...(buildQuestions ? { buildQuestions } : {}) };
+    // #14: the phases this run wrote, so a later resume knows which rows are the failed run's. Only a normal return has one.
+    const phaseRangeAfter = phaseRangeBefore === undefined ? undefined : await maxPhaseSeqFor(cfg, opts.cwd, opts.adwId);
+    const phaseRange = phaseRangeBefore !== undefined && phaseRangeAfter !== undefined && phaseRangeAfter > phaseRangeBefore ? { from: phaseRangeBefore, to: phaseRangeAfter } : undefined;
+    return { accepted: false, adwId: opts.adwId, detail, reviewRequired, ...(buildQuestions ? { buildQuestions } : {}), ...(phaseRange ? { phaseRange } : {}) };
   };
 
   /**
@@ -1445,6 +1513,16 @@ export async function watchCommand(argv: string[]): Promise<number> {
     worktreesDir,
     linkDataDir,
     ...(cfg.watch.setup.length > 0 ? { setupWorktree } : {}),
+    // #14: present only with `watch.resume_from_wip` — absent keeps every resume branch in core/watch.ts dead.
+    ...(cfg.watch.resume_from_wip
+      ? {
+          resume: {
+            atFailedPhase: cfg.watch.resume_at_failed_phase,
+            protectedFiles: cfg.defaults.protected_files,
+            readPriorRun: (adwId: string, range: { from: number; to: number }) => priorRunFor(dataPaths, adwId, range),
+          },
+        }
+      : {}),
     dryRun: Boolean(flags["dry-run"]),
     // #200: one bad empty read must not end a --once run; a daemon re-polls anyway.
     ...(flags["once"] ? { eligibleRetry: { delaysMs: [1000, 2000, 4000] } } : {}),

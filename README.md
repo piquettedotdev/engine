@@ -33,7 +33,7 @@ The quickest path is to have your coding agent do it. piquette carries its own i
 
 1. `npm i -g @piquette/engine`
 2. Tell your agent (Claude Code, Codex, opencode, Cursor, ...): **"set up piquette in this repo."** `piquette --help` points it at `piquette skill show piquette-setup`. It detects the repo, asks you the setup questions, writes `.piquette/piquette.config.yaml`, and installs the skills.
-3. Add the keys it names to `.env` yourself. It never asks for a secret in the chat, and the CLI refuses them if passed in.
+3. Add the keys it names to `.env` yourself (or, for credentials shared by every repo on the machine, to `~/.piquette/env`, `chmod 600`). It never asks for a secret in the chat, and the CLI refuses them if passed in.
 4. It runs `piquette doctor`, offers `piquette watch init` if you turned watch on, and commits the shared setup when you say so.
 
 **By hand instead:** run `piquette init` on a terminal for the same interview, fill `.env`, then run `piquette doctor`.
@@ -213,7 +213,9 @@ env:
   SOME_TOKEN: "${SOME_SECRET_FROM_DOTENV}"
 ```
 
-Applied to `process.env` before any command runs. A plain value commits as literal text; `${VAR}` interpolates from whatever's already in `process.env` at that point (the real shell, or `.env`, both of which load first) — so a real secret can live in `.env` (gitignored) and be referenced here without ever being written into this file. An already-set `process.env` value always wins over `env:`'s — `piquette.config.yaml` supplies the default, a real export still overrides it per machine/session. A `${VAR}` reference to something that's genuinely unset fails loudly at startup, naming the missing variable, rather than silently interpolating to an empty string.
+Applied to `process.env` before any command runs. A plain value commits as literal text; `${VAR}` interpolates from whatever's already in `process.env` at that point (the real shell, `.env` or the machine env file `~/.piquette/env`, all of which load first) — so a real secret can live in `.env` (gitignored) and be referenced here without ever being written into this file. An already-set `process.env` value always wins over `env:`'s — `piquette.config.yaml` supplies the default, a real export still overrides it per machine/session. A `${VAR}` reference to something that's genuinely unset fails loudly at startup, naming the missing variable, rather than silently interpolating to an empty string.
+
+**Machine env file.** `~/.piquette/env` (or `$PIQUETTE_CONFIG_HOME/env`) sets env vars for every repo on the machine, for credentials such as the sync Access token. Precedence: shell, then repo `.env`, then this file, then `env:`. It takes `KEY=value` or `export KEY=value` lines, does no `$VAR` expansion, ignores `PIQUETTE_CONFIG_HOME`/`HOME`/`USERPROFILE`, and is refused unless you own it and group/others cannot write it (keep it `chmod 600`). `piquette doctor` shows which layer each credential came from.
 
 ### A third backend: opencode
 
@@ -546,6 +548,10 @@ This is a **label**, not this repo's own GitHub Projects v2 "Priority" field (if
 ### When the push is rejected (repo hooks)
 
 A failed run's work is committed and pushed to `<branch>-wip` before its worktree is removed. When a `git push` fails anyway (most often a repo `pre-push` hook running the project's own tests), the blocked comment includes the last 50 lines of what git printed, stdout and stderr both, so the hook's report is visible. If the `-wip` push is rejected too, the commits are kept **locally** on `piquette-failed/<id>-<slug>-<sha>` in the watcher's repo, and the comment gives the `git push` that recovers them. A hook runs after the chain has finished, so the chain's bounded fix loop never sees it. To give the builder that loop, add the hook's command (for example `npx lefthook run pre-push`) to `quality.checks` and to the suite your chain's `fixLoop` runs.
+
+### Resuming a blocked issue (`watch.resume_from_wip`)
+
+Off by default. With `watch.resume_from_wip: true`, a failed run's preserved work is named `<branch>-wip-<sha>` (a new name per failure, never overwritten) and the issue's marker records it. When you relabel the issue `ready`, the next claim starts from that work, merged with the latest base, and its prompt says what the failed attempt got to (the failed phase, its error, and a failed proof's next steps). Anything doubtful falls back to a fresh start from `origin/<base>`: the ref is gone, base moved and the merge conflicted, the diff touches a protected path, or the marker was edited by hand. `watch.resume_at_failed_phase: true` additionally skips the failed run's leading `plan`/`build` phases when their results are still in the local trace db; gates, verification and commit always re-run. A resume applies to single dispatch only. Preserved branches are not deleted automatically; list them with `git ls-remote origin 'refs/heads/piquette-watch/*-wip-*'` and delete the ones you no longer need.
 
 ### Revising a rejected (or still-open) PR (`<prefix>:feedback`)
 

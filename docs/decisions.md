@@ -829,7 +829,9 @@ floor, the clipped state, the action table).
     error's `withholdsWip`): then nothing is committed or pushed, the blocked
     comment says so, and the work is discarded with the worktree. A flagged
     `auth`, `schema`, `money`, ... diff is therefore pushed to the `-wip`
-    branch for a human to look at, with no PR.
+    branch for a human to look at, with no PR. (With `watch.resume_from_wip` on
+    the branch is `<branch>-wip-<sha>`, never overwritten, and the next claim
+    resumes from it.)
   - `piquette loop`: the error is **terminal**. The loop records the attempt and
     stops (`reason: blocked`) instead of re-running; without that, a flagged
     diff would fail every iteration the same way and burn `--stuck-after`

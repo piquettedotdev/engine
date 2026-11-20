@@ -43,6 +43,12 @@ blocks are already configured, templates, installed skills.
   writes that empty starter file and nothing else.
 - Use `context.scripts` to suggest quality check commands, and
   `context.repo_slug` for the watch repo.
+- The watch questions include two opt-in, default-no ones:
+  `watch.resume_from_wip` (a blocked issue relabelled ready resumes from
+  its preserved `-wip-<sha>` branch instead of starting over) and, only if
+  that is yes, `watch.resume_at_failed_phase` (also skip phases that already
+  finished). Don't turn them on unless the user wants resume behavior; they
+  change what a reclaimed issue starts from.
 
 ## 2. Interview loop
 

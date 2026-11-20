@@ -341,3 +341,56 @@ test("branchAt points a new local branch at HEAD without checking it out, and ov
     cleanup();
   }
 });
+
+test("merge: a clean merge makes a merge commit; a conflict is aborted, leaving a clean tree on the same commit", () => {
+  const { dir, cleanup } = repoWithOrigin();
+  try {
+    const g = makeGit(dir);
+    const sh = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+    writeFileSync(path.join(dir, "shared.txt"), "base\n");
+    g.commitAll("shared");
+    sh("checkout", "-b", "feat/m");
+    writeFileSync(path.join(dir, "mine.txt"), "mine\n");
+    writeFileSync(path.join(dir, "shared.txt"), "mine\n");
+    g.commitAll("mine");
+    sh("checkout", "main");
+    writeFileSync(path.join(dir, "other.txt"), "other\n");
+    g.commitAll("other");
+    sh("checkout", "feat/m");
+    assert.equal(g.isAncestor("main"), false, "base moved");
+    assert.equal(g.merge("main"), true);
+    assert.equal(g.isAncestor("main"), true);
+    assert.equal(g.isDirty(), false);
+
+    sh("checkout", "main");
+    writeFileSync(path.join(dir, "shared.txt"), "theirs\n");
+    g.commitAll("theirs");
+    sh("checkout", "feat/m");
+    const before = g.rev();
+    assert.equal(g.merge("main"), false, "conflict");
+    assert.equal(g.rev(), before, "HEAD untouched");
+    assert.equal(g.isDirty(), false, "merge was aborted, tree is clean");
+  } finally {
+    cleanup();
+  }
+});
+
+test("push: unique -wip-<sha> names never collide, and pushing the same sha twice is a no-op", () => {
+  const { dir, origin, cleanup } = repoWithOrigin();
+  try {
+    const g = makeGit(dir);
+    execFileSync("git", ["checkout", "-b", "feat/z"], { cwd: dir, stdio: "ignore" });
+    writeFileSync(path.join(dir, "b.txt"), "first");
+    g.commitAll("first attempt");
+    const first = `feat/z-wip-${g.shortSha()}`;
+    g.push("origin", "feat/z", { remoteBranch: first });
+    g.push("origin", "feat/z", { remoteBranch: first });
+    writeFileSync(path.join(dir, "c.txt"), "second");
+    g.commitAll("second attempt");
+    const second = `feat/z-wip-${g.shortSha()}`;
+    g.push("origin", "feat/z", { remoteBranch: second });
+    assert.deepEqual(remoteRefs(origin).sort(), [first, second].sort());
+  } finally {
+    cleanup();
+  }
+});

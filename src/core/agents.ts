@@ -35,6 +35,7 @@ import {
   type SandboxConfig,
   type SandboxSpec,
 } from "./data_types.ts";
+import { recordConfigEnv } from "./env_layers.ts";
 import { denySubprocessEnv, isDeniedSubprocessEnv, newId, operatorEnv } from "./utils.ts";
 
 const JSON_FIX_ATTEMPTS = 2; // continue-with-correction attempts for malformed JSON
@@ -483,7 +484,7 @@ export function interpolateEnvValue(key: string, raw: string): string {
   return raw.replace(ENV_VAR_REF, (_match, name) => {
     const value = process.env[name];
     if (value === undefined) {
-      throw new Error(`env.${key}: references \${${name}}, which is not set (.env or the shell) — set it before running piquette`);
+      throw new Error(`env.${key}: references \${${name}}, which is not set (.env, ~/.piquette/env or the shell) — set it before running piquette`);
     }
     return value;
   });
@@ -509,6 +510,7 @@ export function applyConfigEnv(env: Record<string, string>): void {
     if (PROTECTED_CONFIG_ENV.has(key)) continue; // a repo's config must not relocate the machine layer (#221)
     if (process.env[key] !== undefined) continue;
     process.env[key] = interpolateEnvValue(key, rawValue);
+    recordConfigEnv(key);
   }
 }
 

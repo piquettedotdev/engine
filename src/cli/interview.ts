@@ -625,6 +625,7 @@ export async function runInterview(asker: Asker, ctx: DetectedContext, partial?:
     const chainChoices = allChains().map((c) => ({ value: c.name, label: c.name, hint: c.source ? `${c.describe} (repo)` : c.describe }));
     const chain = await asker.select("Chain to run per issue", chainChoices, "plan-build-test");
 
+    const priorWatch = watch;
     watch = { issue_provider: issueProvider, code_host: codeHost, repo, label_prefix: labelPrefix, chain, base_branch: baseBranch };
     if (issueRepo) watch.issue_repo = issueRepo;
 
@@ -648,6 +649,21 @@ export async function runInterview(asker: Asker, ctx: DetectedContext, partial?:
           );
         }
       }
+    }
+
+    // Opt-in, default off: a failed run's work is preserved on a `<branch>-wip-<sha>` ref, and this makes a
+    // `blocked -> ready` relabel resume from it instead of starting over (watch.resume_from_wip, #14).
+    const resumeFromWip = await asker.confirm(
+      "Resume a blocked issue from its preserved work when it moves back to ready (instead of starting over)?",
+      Boolean(priorWatch?.["resume_from_wip"]),
+    );
+    if (resumeFromWip) {
+      watch.resume_from_wip = true;
+      const resumeAtFailedPhase = await asker.confirm(
+        "Also skip the phases that already finished (plan, build, ...) and resume at the one that failed? Best effort; falls back to a full run.",
+        Boolean(priorWatch?.["resume_at_failed_phase"]),
+      );
+      if (resumeAtFailedPhase) watch.resume_at_failed_phase = true;
     }
 
     if (issueProvider === "github-projects") {

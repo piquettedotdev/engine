@@ -73,7 +73,7 @@ export PIQUETTE_SYNC_CLIENT_ID=<id>.access
 export PIQUETTE_SYNC_CLIENT_SECRET=<secret>
 ```
 
-They are sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` and are read from the environment at sync time only. They are never written to config, to the payload, or to a log, and piquette strips them (and any custom `client_*_env` names) from the environment of every agent, gate, quality check, receipt journey, recorded terminal and git commit hook (#33) — even an agent whose `env_allowlist` names them. Redirects are never followed (a 3xx/401/403 reads "Cloudflare Access rejected the service token"), so the secret header cannot travel to another host. The factory never holds `CLOUDFLARE_API_TOKEN` for sync.
+They are sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` and are read from the environment at sync time only. Set them in the shell, the repo `.env`, or once per machine in `~/.piquette/env` (`export KEY=value` lines work; `chmod 600`). They are never written to config, to the payload, or to a log, and piquette strips them (and any custom `client_*_env` names) from the environment of every agent, gate, quality check, receipt journey, recorded terminal and git commit hook (#33) — even an agent whose `env_allowlist` names them. Redirects are never followed (a 3xx/401/403 reads "Cloudflare Access rejected the service token"), so the secret header cannot travel to another host. The factory never holds `CLOUDFLARE_API_TOKEN` for sync.
 
 ## Identity
 

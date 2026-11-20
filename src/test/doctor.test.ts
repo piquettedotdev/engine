@@ -16,13 +16,14 @@ import "./hermetic_git.js";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { doctorCommand } from "../cli/commands/doctor.js";
 import { registerRepoChains } from "../chains/index.js";
 import { loadRepoChains } from "../chains/repo_chains.js";
 import * as paths from "../core/paths.js";
+import { loadStartupEnv, resetEnvLayersForTest } from "../core/env_layers.js";
 
 function tmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "piquette-doctor-test-"));
@@ -352,6 +353,34 @@ test("doctor: watch.refine issue authoring accepts github-projects", async () =>
   }
 });
 
+// ── watch.resume_from_wip (#14) ─────────────────────────────────────────────
+
+test("doctor: watch.resume_from_wip — silent while off; reports the posture when on; fails resume_at_failed_phase without it; warns under fanout", async () => {
+  const cases: Array<{ yaml: string; check: string | null; ok?: boolean; severity?: string | undefined }> = [
+    { yaml: "", check: null },
+    { yaml: "  resume_from_wip: true\n", check: "watch.resume_from_wip", ok: true, severity: "info" },
+    { yaml: "  resume_at_failed_phase: true\n", check: "watch.resume_at_failed_phase", ok: false },
+    { yaml: "  resume_from_wip: true\n  fanout:\n    n: 2\n", check: "watch.resume_from_wip fanout", ok: true, severity: "warn" },
+  ];
+  for (const c of cases) {
+    const dir = tmpRepo();
+    try {
+      writePiquetteConfig(dir, `watch:\n  repo: acme/widgets\n  chain: plan-build-test\n${c.yaml}`);
+      const report = await runDoctor(dir);
+      const found = report.checks.filter((x) => x.name.startsWith("watch.resume_"));
+      if (c.check === null) assert.deepEqual(found, [], "flag off: no resume line at all");
+      else {
+        const hit = found.find((x) => x.name === c.check);
+        assert.ok(hit, `expected ${c.check}; got ${found.map((x) => x.name).join(", ")}`);
+        assert.equal(hit!.ok, c.ok);
+        assert.equal(hit!.severity, c.severity);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 // ── watch.fanout (best-of-N per claimed issue) ──────────────────────────────
 
 test("doctor: watch.fanout — n=3 reports the C x A / C x N multiplier line, and no commit-phase/budget checks fire for a chain that already commits with a ceiling set", async () => {
@@ -532,7 +561,7 @@ test("doctor: observability.db kind:d1 with valid env vars reports credentials c
       assert.ok(credsCheck);
       assert.equal(credsCheck!.ok, true);
       assert.equal(credsCheck!.severity, undefined, "both vars set — no warning to show");
-      assert.match(credsCheck!.detail, /CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are set/);
+      assert.match(credsCheck!.detail, /CLOUDFLARE_ACCOUNT_ID \(environment\) and CLOUDFLARE_API_TOKEN \(environment\) are set/);
       assert.equal(report.checks.some((c) => c.name === "D1 trace db reachability"), false, "--no-probe must skip the live check, same as every other reachability probe in this file");
     });
   } finally {
@@ -855,7 +884,7 @@ test("doctor: a sync block is reported (endpoint label, level, identity, source,
     assert.equal(byName("sync")!.severity, "warn", "full is a warning");
     assert.match(byName("sync identity")!.detail, /repo local\/.* factory \(assigned on first sync\)/);
     assert.match(byName("sync source")!.detail, /^sqlite /);
-    assert.match(byName("sync credentials")!.detail, /PIQUETTE_SYNC_CLIENT_ID and PIQUETTE_SYNC_CLIENT_SECRET are set/);
+    assert.match(byName("sync credentials")!.detail, /PIQUETTE_SYNC_CLIENT_ID \(environment\) and PIQUETTE_SYNC_CLIENT_SECRET \(environment\) are set/);
     assert.equal(byName("sync hub"), undefined, "--no-probe skips the hub probe");
     assert.ok(!JSON.stringify(report).includes("SHOULD-NOT-PRINT"), "values are never printed");
     assert.equal(report.checks.filter((c) => c.name.startsWith("sync") && !c.ok).length, 0, "sync checks never fail");
@@ -1001,6 +1030,86 @@ test("doctor: a claude_code tier rung with a provider/... model fails 'tiering t
       if (saved[i] === undefined) delete process.env[k];
       else process.env[k] = saved[i];
     });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── machine env file (#13) ───────────────────────────────────────────────────
+
+test("doctor: credentials that live only in the machine env file report set, with their source, and a repo .env key reports 'repo .env'", async () => {
+  const dir = tmpRepo();
+  const keys = ["PIQUETTE_SYNC_CLIENT_ID", "PIQUETTE_SYNC_CLIENT_SECRET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "PIQUETTE_CONFIG_HOME"];
+  const saved = keys.map((k) => process.env[k]);
+  for (const k of keys) delete process.env[k];
+  let restore = (): void => {};
+  try {
+    restore = writeMachineConfig(dir, `sync:\n  endpoint: https://hub.example.com/base\nreceipts:\n  store:\n    kind: s3\n    bucket: b\n`);
+    const machineDir = process.env.PIQUETTE_CONFIG_HOME!;
+    const envFile = join(machineDir, "env");
+    writeFileSync(
+      envFile,
+      "export PIQUETTE_SYNC_CLIENT_ID=MENV-ID-VALUE\nexport PIQUETTE_SYNC_CLIENT_SECRET=MENV-SECRET-VALUE\nAWS_ACCESS_KEY_ID=MENV-AK-VALUE\nAWS_SECRET_ACCESS_KEY=MENV-SK-VALUE\n",
+      { mode: 0o600 },
+    );
+    chmodSync(envFile, 0o600);
+    writeFileSync(join(dir, ".env"), "AWS_ACCESS_KEY_ID=REPO-AK-VALUE\n");
+    resetEnvLayersForTest();
+    loadStartupEnv(dir);
+    assert.equal(process.env.AWS_ACCESS_KEY_ID, "REPO-AK-VALUE", "repo .env overrides the machine file");
+
+    const report = await runDoctor(dir);
+    const byName = (n: string) => report.checks.find((c) => c.name === n);
+    const sync = byName("sync credentials")!;
+    assert.match(sync.detail, /PIQUETTE_SYNC_CLIENT_ID \(machine env .*env\) and PIQUETTE_SYNC_CLIENT_SECRET \(machine env .*env\) are set/);
+    assert.equal(sync.severity, undefined);
+    const store = byName("receipt store credentials")!;
+    assert.match(store.detail, /AWS_ACCESS_KEY_ID \(repo \.env\) and AWS_SECRET_ACCESS_KEY \(machine env .*env\) are set/);
+    assert.match(byName("machine env")!.detail, /3 key\(s\)/);
+    assert.equal(byName("machine env permissions"), undefined, "0600 is silent");
+    assert.ok(!/VALUE/.test(JSON.stringify(report)), "values are never printed");
+  } finally {
+    restore();
+    resetEnvLayersForTest();
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k];
+      else process.env[k] = saved[i];
+    });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("doctor: a group/other-readable machine env file warns, and an unsafe (group-writable) one fails 'machine env'", async () => {
+  const dir = tmpRepo();
+  const saved = [process.env.PIQUETTE_CONFIG_HOME, process.env.PIQUETTE_TEST_MENV_DOC];
+  delete process.env.PIQUETTE_TEST_MENV_DOC;
+  let restore = (): void => {};
+  try {
+    restore = writeMachineConfig(dir, "defaults: {}\n");
+    const envFile = join(process.env.PIQUETTE_CONFIG_HOME!, "env");
+    writeFileSync(envFile, "PIQUETTE_TEST_MENV_DOC=1\n");
+    chmodSync(envFile, 0o644);
+    resetEnvLayersForTest();
+    loadStartupEnv(dir);
+    let report = await runDoctor(dir);
+    const warn = report.checks.find((c) => c.name === "machine env permissions")!;
+    assert.equal(warn.severity, "warn");
+    assert.match(warn.detail, /chmod 600/);
+
+    delete process.env.PIQUETTE_TEST_MENV_DOC;
+    chmodSync(envFile, 0o664);
+    resetEnvLayersForTest();
+    loadStartupEnv(dir);
+    report = await runDoctor(dir);
+    const refused = report.checks.find((c) => c.name === "machine env")!;
+    assert.equal(refused.ok, false);
+    assert.match(refused.detail, /NOT loaded/);
+    assert.equal(process.env.PIQUETTE_TEST_MENV_DOC, undefined);
+  } finally {
+    restore();
+    resetEnvLayersForTest();
+    if (saved[0] === undefined) delete process.env.PIQUETTE_CONFIG_HOME;
+    else process.env.PIQUETTE_CONFIG_HOME = saved[0];
+    delete process.env.PIQUETTE_TEST_MENV_DOC;
     rmSync(dir, { recursive: true, force: true });
   }
 });

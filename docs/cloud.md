@@ -172,7 +172,7 @@ this exact domain/path/policy for your config (see above); it does not create th
 
 ```sh
 piquette cloud provision-factory --tenant default --name laptop [--factory-id <uuid>]
-# prints PIQUETTE_SYNC_CLIENT_ID=... and PIQUETTE_SYNC_CLIENT_SECRET=... on stdout, once; put them in that factory's environment
+# prints PIQUETTE_SYNC_CLIENT_ID=... and PIQUETTE_SYNC_CLIENT_SECRET=... on stdout, once; put them in that factory's environment (the shell, the repo `.env`, or `~/.piquette/env`)
 piquette cloud provision-factory --tenant default --name laptop --client-id <id>   # adopt a token you created yourself
 ```
 
