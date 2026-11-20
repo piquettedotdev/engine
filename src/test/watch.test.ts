@@ -295,6 +295,7 @@ function fakeGit(overrides: Partial<GitHandle> = {}): GitHandle {
     worktreeAdd: () => {},
     worktreeRemove: () => {},
     branchAt: () => {},
+    merge: () => true,
     deleteLocalBranch: () => {},
     push: () => {},
     ...overrides,
@@ -3782,4 +3783,192 @@ test("run links: the refine run is told the spec issue it refines", async () => 
   await claimSpecs(deps, state);
   await waitUntil(() => state.refining.size === 0);
   assert.deepEqual(seen, [{ issue: { label: "#120", url: "https://github.com/acme/api/issues/120" } }]);
+});
+
+// ── resume from preserved WIP (#14, watch.resume_from_wip) ───────────────────
+
+const WIP_SHA = "a".repeat(40);
+const RESUME_BRANCH = "piquette-watch/80-resume-me";
+const RESUME_WIP_BRANCH = `${RESUME_BRANCH}-wip-aaaaaaa`;
+
+function wipMarker(over: Partial<NonNullable<WatchMarker["wip"]>> = {}): WatchMarker {
+  return { attempt: 0, wip: { branch: RESUME_WIP_BRANCH, sha: WIP_SHA, adw_id: "issue-80", chain: "plan-build-test", base_sha: "c".repeat(40), at: "2026-01-01T00:00:00Z", ...over } };
+}
+
+interface ResumeProbe {
+  fetches: string[];
+  worktreeAdds: Array<{ branch: string; start: string }>;
+  merges: string[];
+  prompts: string[];
+  logs: string[];
+}
+
+/** A resume-enabled deps whose fakes record what the claim did; `wt` overrides the worktree git. */
+function resumeDeps(provider: FakeProvider, probe: ResumeProbe, over: { git?: Partial<GitHandle>; wt?: Partial<GitHandle>; deps?: Partial<WatchDeps> } = {}): WatchDeps {
+  return makeDeps(provider, new FakeCodeHost(), {
+    retry: noSleep,
+    resume: { atFailedPhase: false, protectedFiles: ["protected/"], readPriorRun: async () => ({ phase: "prove_head", error: "journey 1 failed", next: ["fix the login redirect"] }) },
+    git: fakeGit({
+      rev: (ref) => (ref === `origin/${RESUME_WIP_BRANCH}` ? WIP_SHA : "c".repeat(40)),
+      fetch: (_r, ref) => void probe.fetches.push(ref),
+      worktreeAdd: (_p, branch, start) => void probe.worktreeAdds.push({ branch, start }),
+      ...over.git,
+    }),
+    worktreeGit: () => fakeGit({ diffFiles: () => ["src/a.ts"], isAncestor: () => true, merge: (ref) => (probe.merges.push(ref), true), ...over.wt }),
+    runChain: async (opts) => {
+      probe.prompts.push(opts.prompt);
+      return { accepted: true, adwId: opts.adwId, detail: "" };
+    },
+    log: (m) => void probe.logs.push(m),
+    ...over.deps,
+  });
+}
+
+const newProbe = (): ResumeProbe => ({ fetches: [], worktreeAdds: [], merges: [], prompts: [], logs: [] });
+
+test("resume off: a marker carrying wip is ignored — fresh start from origin/main, no wip fetch, no resume section", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me", "ready", wipMarker());
+  const probe = newProbe();
+  const deps = resumeDeps(provider, probe);
+  delete deps.resume;
+  await runOne(deps);
+  assert.deepEqual(probe.fetches, ["main"]);
+  assert.deepEqual(probe.worktreeAdds, [{ branch: RESUME_BRANCH, start: "origin/main" }]);
+  assert.doesNotMatch(probe.prompts[0]!, /Resuming a previous attempt/);
+});
+
+test("resume on: a failed run is preserved on a unique -wip-<sha> ref with a plain push, and the marker records it with the phase range", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me");
+  const pushes: Array<{ remoteBranch?: string; forceWithLease?: boolean }> = [];
+  const probe = newProbe();
+  const deps = resumeDeps(provider, probe, {
+    wt: { isDirty: () => false, rev: () => "b".repeat(40), shortSha: () => "bbbbbbb", push: (_r, _b, o) => void pushes.push(o ?? {}) },
+    deps: { runChain: async (opts) => ({ accepted: false, adwId: opts.adwId, detail: "build failed", phaseRange: { from: 0, to: 4 } }) },
+  });
+  await runOne(deps);
+  assert.deepEqual(pushes, [{ remoteBranch: `${RESUME_BRANCH}-wip-bbbbbbb` }], "no forceWithLease: a ref is never overwritten");
+  const marker = provider.entries.get("80")!.marker!;
+  assert.deepEqual({ ...marker.wip!, at: "" }, { branch: `${RESUME_BRANCH}-wip-bbbbbbb`, sha: "b".repeat(40), adw_id: "issue-80", chain: "plan-build-test", base_sha: "c".repeat(40), at: "", phases: { from: 0, to: 4 } });
+  assert.match(provider.transitions.at(-1)!.detail!, /-wip-bbbbbbb/);
+  assert.equal(provider.transitions.at(-1)!.to, "blocked");
+});
+
+test("resume on: a thrown chain error records wip too, without a phase range", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me");
+  const probe = newProbe();
+  const deps = resumeDeps(provider, probe, {
+    wt: { rev: () => "b".repeat(40), shortSha: () => "bbbbbbb" },
+    deps: {
+      runChain: async () => {
+        throw new Error("boom");
+      },
+    },
+  });
+  await runOne(deps);
+  assert.equal(provider.entries.get("80")!.marker!.wip!.phases, undefined);
+  assert.equal(provider.entries.get("80")!.marker!.wip!.branch, `${RESUME_BRANCH}-wip-bbbbbbb`);
+});
+
+test("resume on: a valid wip pointer starts the worktree from origin/<wip>, tells the agent, and carries wip on the claim marker; landing drops it", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me", "ready", wipMarker({ phases: { from: 0, to: 4 } }));
+  const probe = newProbe();
+  const seenClaimMarkers: Array<WatchMarker | null> = [];
+  const deps = resumeDeps(provider, probe, {
+    deps: {
+      runChain: async (opts) => {
+        probe.prompts.push(opts.prompt);
+        seenClaimMarkers.push(provider.entries.get("80")!.marker);
+        return { accepted: true, adwId: opts.adwId, detail: "" };
+      },
+    },
+  });
+  await runOne(deps);
+  assert.deepEqual(probe.fetches, ["main", RESUME_WIP_BRANCH]);
+  assert.deepEqual(probe.worktreeAdds, [{ branch: RESUME_BRANCH, start: `origin/${RESUME_WIP_BRANCH}` }]);
+  assert.match(probe.prompts[0]!, /^Resume me/);
+  assert.match(probe.prompts[0]!, /## Resuming a previous attempt/);
+  assert.match(probe.prompts[0]!, /stopped at the `prove_head` phase with this error:\n\njourney 1 failed/);
+  assert.match(probe.prompts[0]!, /- fix the login redirect/);
+  assert.doesNotMatch(probe.prompts[0]!, /merged with the latest/);
+  assert.equal(seenClaimMarkers[0]!.wip!.branch, RESUME_WIP_BRANCH, "a daemon death mid-run still finds the preserved work");
+  assert.equal(provider.entries.get("80")!.marker?.wip, undefined, "a successful landing drops it");
+});
+
+test("resume on: a moved base is merged in, and the prompt says so", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me", "ready", wipMarker());
+  const probe = newProbe();
+  await runOne(resumeDeps(provider, probe, { wt: { isAncestor: () => false } }));
+  assert.deepEqual(probe.merges, ["origin/main"]);
+  assert.deepEqual(probe.worktreeAdds, [{ branch: RESUME_BRANCH, start: `origin/${RESUME_WIP_BRANCH}` }]);
+  assert.match(probe.prompts[0]!, /merged with the latest `main`/);
+});
+
+test("resume on: every doubt falls back to a fresh start from origin/main, with a log line", async () => {
+  const cases: Array<{ name: string; marker: WatchMarker; over?: Parameters<typeof resumeDeps>[2]; log: RegExp }> = [
+    { name: "wip ref gone", marker: wipMarker(), over: { git: { fetch: (_r, ref) => { if (ref !== "main") throw new Error("couldn't find remote ref"); } } }, log: /is gone from origin/ },
+    { name: "sha mismatch", marker: wipMarker({ sha: "d".repeat(40), branch: `${RESUME_BRANCH}-wip-ddddddd` }), over: { git: { rev: () => WIP_SHA } }, log: /no longer matches/ },
+    { name: "non-canonical branch", marker: wipMarker({ branch: "main-wip-aaaaaaa" }), log: /not one piquette wrote/ },
+    { name: "wrong adw_id", marker: wipMarker({ adw_id: "issue-81" }), log: /not one piquette wrote/ },
+    { name: "branch suffix is not the sha's prefix", marker: wipMarker({ branch: `${RESUME_BRANCH}-wip-bbbbbbb` }), log: /not one piquette wrote/ },
+    { name: "marker.pr set", marker: { ...wipMarker(), pr: 5 }, log: /^$/ },
+    { name: "protected path in the diff", marker: wipMarker(), over: { wt: { diffFiles: () => ["src/a.ts", "protected/x.yaml"] } }, log: /changes protected path/ },
+    { name: "merge conflict", marker: wipMarker(), over: { wt: { isAncestor: () => false, merge: () => false } }, log: /conflicted/ },
+  ];
+  for (const c of cases) {
+    const provider = new FakeProvider();
+    provider.addIssue("80", "Resume me", "ready", c.marker);
+    const probe = newProbe();
+    await runOne(resumeDeps(provider, probe, c.over));
+    const last = probe.worktreeAdds.at(-1)!;
+    // A PR on the marker means a later round's branch name; every other case reuses the canonical one.
+    assert.equal(last.start, "origin/main", `${c.name}: fresh start`);
+    assert.doesNotMatch(probe.prompts[0]!, /Resuming a previous attempt/, c.name);
+    if (c.log.source !== "^$") assert.ok(probe.logs.some((l) => c.log.test(l)), `${c.name}: logged (${probe.logs.join(" | ")})`);
+  }
+});
+
+test("resume phases: offered to the chain only with resume_at_failed_phase, a recorded range, and the same chain; a resumed run always says so", async () => {
+  const phases = { from: 1, to: 5 };
+  const cases: Array<{ name: string; atFailedPhase: boolean; marker: WatchMarker; expected: unknown }> = [
+    { name: "all conditions met", atFailedPhase: true, marker: wipMarker({ phases }), expected: { phases } },
+    { name: "phase resume off", atFailedPhase: false, marker: wipMarker({ phases }), expected: {} },
+    { name: "no recorded range", atFailedPhase: true, marker: wipMarker(), expected: {} },
+    { name: "different chain", atFailedPhase: true, marker: wipMarker({ phases, chain: "build-review" }), expected: {} },
+  ];
+  for (const c of cases) {
+    const provider = new FakeProvider();
+    provider.addIssue("80", "Resume me", "ready", c.marker);
+    const probe = newProbe();
+    let seen: unknown = "unset";
+    const deps = resumeDeps(provider, probe, {
+      deps: {
+        resume: { atFailedPhase: c.atFailedPhase, protectedFiles: [] },
+        runChain: async (opts) => {
+          seen = opts.resume;
+          return { accepted: true, adwId: opts.adwId, detail: "" };
+        },
+      },
+    });
+    await runOne(deps);
+    assert.deepEqual(seen, c.expected, c.name);
+  }
+  // A fresh start (nothing to resume) passes no resume at all.
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me");
+  let seen: unknown = "unset";
+  await runOne(resumeDeps(provider, newProbe(), { deps: { runChain: async (opts) => ((seen = opts.resume), { accepted: true, adwId: opts.adwId, detail: "" }) } }));
+  assert.equal(seen, undefined);
+});
+
+test("resume on: a reconcileOrphans retry keeps the carried-forward wip on the marker, so the rerun resumes from it", async () => {
+  const provider = new FakeProvider();
+  provider.addIssue("80", "Resume me", "working", { ...wipMarker(), worktree: "/nowhere", branch: RESUME_BRANCH });
+  await reconcileOrphans(resumeDeps(provider, newProbe()), createWatchState());
+  assert.equal(provider.entries.get("80")!.marker?.wip?.branch, RESUME_WIP_BRANCH);
+  assert.equal(provider.entries.get("80")!.state, "ready");
 });

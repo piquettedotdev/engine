@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { doctorCommand } from "../cli/commands/doctor.js";
 import { configOrigins } from "../core/config_origins.js";
-import { BUILTIN_CONFIG_PATH, machineConfigPath, resolveConfigPaths, type RepoAnchor } from "../core/paths.js";
+import { BUILTIN_CONFIG_PATH, machineConfigDir, machineConfigPath, machineEnvPath, resolveConfigPaths, type RepoAnchor } from "../core/paths.js";
 
 function scratch(): { root: string; home: string; repo: string; anchor: RepoAnchor } {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "piquette-layers-")));
@@ -177,4 +177,12 @@ test("doctor never probes a repo-layer sync endpoint and never sends it an env v
   const checks = (JSON.parse(logs.join("\n")) as { checks: Array<{ name: string; detail: string }> }).checks;
   assert.match(checks.find((c) => c.name === "sync routing")!.detail, /sync\.endpoint, sync\.client_id_env, sync\.client_secret_env ignored/);
   assert.match(checks.find((c) => c.name === "sync hub")!.detail, /not taken from a repo layer/);
+});
+
+test("machineConfigDir / machineEnvPath: PIQUETTE_CONFIG_HOME wins, empty counts as unset, default is ~/.piquette", () => {
+  assert.equal(machineConfigDir({ PIQUETTE_CONFIG_HOME: "/x/cfg" }, "/h"), "/x/cfg");
+  assert.equal(machineEnvPath({ PIQUETTE_CONFIG_HOME: "/x/cfg" }, "/h"), join("/x/cfg", "env"));
+  assert.equal(machineEnvPath({ PIQUETTE_CONFIG_HOME: "" }, "/h"), join("/h", ".piquette", "env"));
+  assert.equal(machineEnvPath({}, "/h"), join("/h", ".piquette", "env"));
+  assert.equal(machineConfigPath({ PIQUETTE_CONFIG_HOME: "/x/cfg" }, "/h"), join("/x/cfg", "piquette.config.yaml"));
 });

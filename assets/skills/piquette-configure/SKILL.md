@@ -13,7 +13,7 @@ CLI keeps every other block exactly as it was.
 | `coding_agent` | `defaults.coding_agent`, `defaults.model`, `agents:` model pins, `env:` launch commands, auth |
 | `quality` | `quality.checks`, `quality.suites` |
 | `receipts` | `receipts:` (store, viewer URL) |
-| `watch` | `watch:` (tracker, code host, repo, labels, chain, refine lane) |
+| `watch` | `watch:` (tracker, code host, repo, labels, chain, refine lane, resume-from-WIP) |
 | `notifications` | `notifications:` (Slack / Teams / webhook) |
 | `advanced` | thinking level, data_dir, protected_files, poll/timeouts, `observability:` |
 
@@ -29,7 +29,9 @@ then verify with `piquette doctor --json`.
 1. `piquette init --detect`. Its `blocks[].configured` shows what exists,
    and `config_exists` must be `true` (otherwise use **piquette-setup**).
 2. Map the request to block(s). "Use opus" → `coding_agent`. "Add a lint
-   check" → `quality`. "Run issues from Jira" → `watch`.
+   check" → `quality`. "Run issues from Jira" → `watch`. "Stop redoing
+   work when I unblock an issue" → `watch` (`resume_from_wip`, and
+   `resume_at_failed_phase` to also skip finished phases; both opt-in).
 3. Run the interview loop for just those blocks:
 
    ```bash

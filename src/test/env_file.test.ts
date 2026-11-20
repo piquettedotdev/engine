@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { maskSecret, readEnvFile, upsertEnvFile, writeEnvExample } from "../cli/env_file.js";
+import { maskSecret, parseEnvText, readEnvFile, upsertEnvFile, writeEnvExample } from "../cli/env_file.js";
 
 let dir: string;
 
@@ -81,4 +81,37 @@ test("writeEnvExample writes key names with empty values, sorted and de-duplicat
 test("writeEnvExample writes nothing when there are no keys", () => {
   writeEnvExample(dir, []);
   assert.equal(existsSync(join(dir, ".env.example")), false);
+});
+
+test("parseEnvText: export prefix, quotes, inline comments on unquoted values only, last duplicate wins", () => {
+  const { values, ignoredLines } = parseEnvText(
+    ["# comment", "", "export A=1", "B=\"two words\"", "C='x # not a comment'", "D=plain # trailing", "E=a#b", "A=3", "export  F = nope"].join("\n"),
+  );
+  assert.equal(values.get("A"), "3");
+  assert.equal(values.get("B"), "two words");
+  assert.equal(values.get("C"), "x # not a comment");
+  assert.equal(values.get("D"), "plain");
+  assert.equal(values.get("E"), "a#b", "a # with no preceding space is part of the value");
+  assert.equal(values.has("F"), false);
+  assert.equal(ignoredLines, 1);
+});
+
+test("parseEnvText: CRLF and a leading BOM are tolerated; non-assignment lines are counted, never fatal", () => {
+  const { values, ignoredLines } = parseEnvText("\uFEFFexport X=1\r\nset -a\r\nY=2\r\n");
+  assert.equal(values.get("X"), "1");
+  assert.equal(values.get("Y"), "2");
+  assert.equal(ignoredLines, 1);
+});
+
+test("parseEnvText: no $VAR or $(...) expansion — values are literal", () => {
+  const { values } = parseEnvText("A=$HOME/x\nB=$(whoami)\nC=\"${HOME}\"\n");
+  assert.equal(values.get("A"), "$HOME/x");
+  assert.equal(values.get("B"), "$(whoami)");
+  assert.equal(values.get("C"), "${HOME}");
+});
+
+test("upsertEnvFile still leaves `export X=` lines alone (readEnvFile does not parse them)", () => {
+  writeFileSync(join(dir, ".env"), "export KEEP=1\n");
+  upsertEnvFile(dir, { NEW: "2" });
+  assert.match(readFileSync(join(dir, ".env"), "utf-8"), /^export KEEP=1$/m);
 });

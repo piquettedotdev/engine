@@ -35,6 +35,34 @@ export function readEnvFile(p: string): Map<string, string> {
   return values;
 }
 
+const EXPORT_KEY_LINE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+
+/**
+ * Parses env-file TEXT in the shell-compatible dialect the machine env file uses (`~/.piquette/env` is also `source`d by
+ * `scripts/factory/lib.sh`): optional `export ` prefix, CRLF and a leading BOM tolerated, blank lines and `#` comments skipped,
+ * an inline ` #...` comment stripped from UNQUOTED values only, quotes removed, the last duplicate wins. There is NO `$VAR` or
+ * `$(...)` expansion — values are taken literally. Any other non-comment line (`set -a`, ...) is counted in `ignoredLines`,
+ * never an error. Does not touch `readEnvFile`/`upsertEnvFile`, which `piquette init` uses to round-trip a repo `.env`.
+ */
+export function parseEnvText(text: string): { values: Map<string, string>; ignoredLines: number } {
+  const values = new Map<string, string>();
+  let ignoredLines = 0;
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const match = EXPORT_KEY_LINE.exec(line);
+    if (!match) {
+      ignoredLines++;
+      continue;
+    }
+    const raw = match[2].trim();
+    const quoted = raw.length >= 2 && (raw[0] === '"' || raw[0] === "'") && raw.endsWith(raw[0]);
+    values.set(match[1], quoted ? unquote(raw) : unquote(raw.replace(/\s+#.*$/, "")));
+  }
+  return { values, ignoredLines };
+}
+
 /** Redacts a secret for display: keeps the last 4 characters, masks the rest. Short values are fully masked. */
 export function maskSecret(value: string): string {
   if (value.length <= 4) return "•".repeat(Math.max(value.length, 1));

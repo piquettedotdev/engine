@@ -78,6 +78,8 @@ import type { NotifyEvent } from "./notify/channel.ts";
 import { escalationText, type VerificationOutcome } from "./verification.ts";
 import { PRIORITY_RANK, type RefinedPriority } from "./data_types.ts";
 import { redact } from "./otel.ts";
+import { resumeSection, tryResumeFromWip, validateWipMarker, type PriorRunSummary, type ResumeResult } from "./watch_resume.ts";
+import type { WipRef } from "./issues/provider.ts";
 import { SignoffRequiredError } from "./diff_risk.ts";
 import { isTransientError, withRetry, type RetryOptions } from "./retry.ts";
 import { parseRefineMarker } from "./refine.ts";
@@ -228,6 +230,12 @@ export interface ChainRunResult {
    * is still there, just waiting on an answer) rather than `blocked`.
    */
   buildQuestions?: RefinedQuestionRef[];
+  /**
+   * The (from, to] phase-seq range this run wrote for its adw_id, set only by
+   * a CLI wrapper running with `watch.resume_from_wip` on. Recorded on the
+   * preserved-work marker so a phase resume knows which rows are the failed run's.
+   */
+  phaseRange?: { from: number; to: number };
 }
 
 /** One issue the refine lane created — enough for `announceRefined`'s summary comment and the marker's idempotency record. */
@@ -342,6 +350,20 @@ export interface WatchChainRoute {
   note?: string | null;
 }
 
+/** See `WatchDeps.resume`. */
+export interface WatchResumeDeps {
+  /** `watch.resume_at_failed_phase`: also try to skip the failed run's leading phases. */
+  atFailedPhase: boolean;
+  protectedFiles: string[];
+  /**
+   * What the previous attempt got to, read from the local trace database for
+   * the resumed prompt: the failed phase, its error, and (for a `prove_*`
+   * phase) the logged `next` list. `undefined` / absent = no local record;
+   * the prompt then carries only a generic sentence. Never throws.
+   */
+  readPriorRun?: (adwId: string, range: { from: number; to: number }) => Promise<PriorRunSummary | undefined>;
+}
+
 export interface WatchDeps {
   provider: IssueProvider;
   codeHost: CodeHostProvider;
@@ -382,6 +404,16 @@ export interface WatchDeps {
   refineChain: string;
   /** Same shape as `runChain`, for the refine lane — see its own doc comment for why the two aren't unified into one callback. */
   runRefine: (opts: { prompt: string; cwd: string; adwId: string; issueId: string; chainOptions: Record<string, string>; links?: RunLinks }) => Promise<RefineRunResult>;
+  /**
+   * `watch.resume_from_wip` (#14). Present ONLY when the flag is on — every
+   * resume branch below is guarded by it, so absent (the default, and what
+   * every existing test constructs) is byte-identical to before: the single
+   * `-wip` name with force-with-lease, no marker `wip`, always a fresh start.
+   * `protectedFiles` is `defaults.protected_files`, for the resume-time check
+   * that a preserved tip does not carry a change to a protected path. Read
+   * only by `runIssueSingle` — a fan-out claim never resumes.
+   */
+  resume?: WatchResumeDeps;
   worktreesDir: string; // OUTSIDE the repo — see module doc comment
   /**
    * Symlink (or otherwise wire up) `<worktreePath>/.piquette/data` to the MAIN
@@ -413,7 +445,21 @@ export interface WatchDeps {
    * record on its session row the moment the row exists, so the trace UI can
    * link the issue while the run is still live.
    */
-  runChain: (opts: { prompt: string; cwd: string; adwId: string; chainOptions: Record<string, string>; chain?: string; links?: RunLinks }) => Promise<ChainRunResult>;
+  runChain: (opts: {
+    prompt: string;
+    cwd: string;
+    adwId: string;
+    chainOptions: Record<string, string>;
+    chain?: string;
+    links?: RunLinks;
+    /**
+     * Set only when this run starts from a previous attempt's preserved work
+     * (`watch.resume_from_wip`). `phases` is present only with
+     * `watch.resume_at_failed_phase`, the preserved run was the same chain, and
+     * it left a phase range: the leading phases that run completed may be skipped.
+     */
+    resume?: { phases?: { from: number; to: number } };
+  }) => Promise<ChainRunResult>;
   /**
    * The decision-layer chain router (#107) — picks which chain builds a plain `ready`
    * claim, from `watch.chain` plus the operator's `watch.chains` allowlist
@@ -798,7 +844,7 @@ async function releaseClaim(deps: WatchDeps, issue: Issue, progress: RunProgress
 function pushWorktreeHead(
   deps: WatchDeps,
   git: GitHandle,
-  w: { issueId: string; branch: string; base: string; remoteBranch?: string },
+  w: { issueId: string; branch: string; base: string; remoteBranch?: string; plainPush?: boolean },
 ): void {
   let current = "";
   try {
@@ -815,7 +861,8 @@ function pushWorktreeHead(
         `The agent switched to a branch unrelated to the base, so its commits are not this run's work — inspect the worktree by hand.`,
     );
   }
-  git.push("origin", w.branch, w.remoteBranch ? { remoteBranch: w.remoteBranch, forceWithLease: true } : undefined);
+  // `plainPush`: a uniquely-named preserved ref (`watch.resume_from_wip`) is never overwritten, so no lease is needed — and a rejected push means something else owns the name.
+  git.push("origin", w.branch, w.remoteBranch ? { remoteBranch: w.remoteBranch, ...(w.plainPush ? {} : { forceWithLease: true }) } : undefined);
 }
 
 /**
@@ -858,13 +905,25 @@ async function preserveWork(
     deps.log(`watch: ${w.issue.id}: could not preserve work (${(error as Error).message})`);
     return null;
   }
-  const wip = `${w.branch}-wip`;
+  // `watch.resume_from_wip` on: a unique name per preserved tip, pushed plain, so a ref is never overwritten
+  // and the marker's pointer to it stays true. Off: the single `-wip` name, force-with-lease, exactly as before.
+  let wip = `${w.branch}-wip`;
+  let sha: string | undefined;
+  if (deps.resume) {
+    try {
+      sha = git.rev();
+      wip = `${w.branch}-wip-${git.shortSha()}`;
+    } catch (error) {
+      deps.log(`watch: ${w.issue.id}: could not name the preserved work (${(error as Error).message})`);
+      return null;
+    }
+  }
   try {
     await retried(deps, `preserve ${w.issue.id}`, async () => {
-      pushWorktreeHead(deps, git, { issueId: w.issue.id, branch: w.branch, base: w.base, remoteBranch: wip });
+      pushWorktreeHead(deps, git, { issueId: w.issue.id, branch: w.branch, base: w.base, remoteBranch: wip, plainPush: Boolean(deps.resume) });
     });
     deps.log(`watch: ${w.issue.id}: work preserved on ${wip}`);
-    return { branch: wip, pushed: true };
+    return { branch: wip, pushed: true, ...(sha ? { sha } : {}) };
   } catch (error) {
     deps.log(`watch: ${w.issue.id}: could not push work to ${wip} (${(error as Error).message}) — keeping it locally`);
   }
@@ -883,11 +942,55 @@ async function preserveWork(
 interface PreservedWork {
   branch: string;
   pushed: boolean;
+  /** The preserved tip's full sha — recorded only while `watch.resume_from_wip` is on (see `recordWip`). */
+  sha?: string;
 }
 
 /** `piquette-watch/<id>-<slug>` -> `piquette-failed/<id>-<slug>-<sha>`: the local branch `preserveWork` keeps unpushable commits on. */
 export function keptBranchName(branch: string, sha: string): string {
   return `piquette-failed/${branch.replace(/^piquette-watch\//, "")}-${sha}`;
+}
+
+/** `deps.resume.readPriorRun`, which must never throw but is injected — a throw would block a claim over a prompt nicety. */
+async function safePriorRun(deps: WatchDeps, adwId: string, range?: { from: number; to: number }): Promise<PriorRunSummary | undefined> {
+  try {
+    return range ? await deps.resume?.readPriorRun?.(adwId, range) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `watch.resume_from_wip` only: record where a failed run's pushed work lives
+ * on the issue marker, so the next claim can resume from it. Written over the
+ * claim-time marker (`claim`), before the blocked transition, so it is the
+ * last marker on the issue. Best effort: a write failure only means the next
+ * claim starts fresh. References only — see `WatchMarker.wip`.
+ */
+async function recordWip(
+  deps: WatchDeps,
+  issue: Issue,
+  claim: WatchMarker | undefined,
+  wip: PreservedWork | null,
+  info: { adwId: string; chain: string; baseSha: string | undefined; phases?: { from: number; to: number } },
+): Promise<void> {
+  if (!deps.resume || !claim || !wip?.pushed || !wip.sha || !info.baseSha) return;
+  try {
+    await deps.provider.writeMarker(issue, {
+      ...claim,
+      wip: {
+        branch: wip.branch,
+        sha: wip.sha,
+        adw_id: info.adwId,
+        chain: info.chain,
+        base_sha: info.baseSha,
+        at: new Date().toISOString(),
+        ...(info.phases ? { phases: info.phases } : {}),
+      },
+    });
+  } catch (error) {
+    deps.log(`watch: ${issue.id}: could not record the preserved work on the issue marker (${(error as Error).message}) — the next claim starts fresh`);
+  }
 }
 
 /** The blocked-comment suffix when `diff_risk` flagged a possible secret: the work was deliberately NOT pushed. */
@@ -2784,6 +2887,9 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
   // measured against — reassigned alongside `diffBase` below.
   let worktreeCreated = false;
   let wipBase = `origin/${deps.baseBranch}`;
+  // `watch.resume_from_wip` only: the claim-time marker `recordWip` writes over, and the base sha the run started from.
+  let claimMarker: WatchMarker | undefined;
+  let startSha: string | undefined;
   const progress: RunProgress = { step: "starting the run", started: false, mutated: false };
   const pre = <T>(step: string, fn: () => T | Promise<T>) => preStep(deps, issue, progress, step, fn);
   try {
@@ -2802,6 +2908,8 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
     let openPrOpts: { existingPr?: number; supersedesPr?: number; revisionRound?: number; routeNote?: string | null; respondingTo?: PrComment[] } = {};
     let routed: string | undefined;
     let openPrRouteNote: string | null = null;
+    // `watch.resume_from_wip` only: a validated pointer to the previous attempt's preserved work, tried below.
+    let resumeWip: WipRef | null = null;
 
     if (revision) {
       if (!priorMarker?.pr) {
@@ -2922,6 +3030,11 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
       startPoint = `origin/${deps.baseBranch}`;
       diffBase = `origin/${deps.baseBranch}`;
       prompt = buildIssuePrompt(issue);
+      // A resume candidate needs the flag, a marker whose `wip` validates, and no PR from an earlier round (then `branch` is canonical, round 0).
+      if (deps.resume && !priorMarker?.pr && priorMarker?.wip) {
+        resumeWip = validateWipMarker(priorMarker.wip, { canonicalBranch: branch, adwId });
+        if (!resumeWip) deps.log(`watch: ${issue.id}: the issue marker's preserved-work pointer is not one piquette wrote — starting fresh from origin/${deps.baseBranch}`);
+      }
       prCarry = undefined;
       openPrOpts = openPrRouteNote ? { revisionRound: plainRound, routeNote: openPrRouteNote } : { revisionRound: plainRound };
     }
@@ -2937,7 +3050,24 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
     // there's nothing to remove.
     progress.step = "preparing the worktree";
     cleanupWorktree(deps, { worktree: worktreePath, branch });
-    deps.git.worktreeAdd(worktreePath, branch, startPoint);
+    let resumed: ResumeResult | null = null;
+    if (resumeWip && deps.resume) {
+      resumed = tryResumeFromWip(deps, {
+        issueId: issue.id,
+        worktreePath,
+        branch,
+        wip: resumeWip,
+        protectedFiles: deps.resume.protectedFiles,
+        cleanup: () => cleanupWorktree(deps, { worktree: worktreePath, branch }),
+      });
+    }
+    if (resumed && resumeWip && deps.resume) {
+      const prior = await safePriorRun(deps, adwId, resumeWip.phases);
+      prompt = `${prompt}\n\n${resumeSection({ ...resumed, baseBranch: deps.baseBranch, ...(prior ? { prior } : {}) })}`;
+      deps.log(`watch: ${issue.id}: resuming from preserved work ${resumed.wipBranch}${resumed.merged ? ` (merged with ${startPoint})` : ""}`);
+    } else {
+      deps.git.worktreeAdd(worktreePath, branch, startPoint);
+    }
     worktreeCreated = true;
     wipBase = diffBase;
     deps.linkDataDir(worktreePath);
@@ -2966,17 +3096,30 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
     // stale `pr` surviving into a fresh attempt's marker would let a daemon
     // restart resume straight to `review` off a PR this NEW attempt hasn't
     // touched yet.
-    await pre("writing the claim marker", () =>
-      deps.provider.writeMarker(issue, { pr: prCarry, revision: revisionCarry, worktree: worktreePath, branch, attempt: 0, ...(routed ? { chain: routed } : {}) }),
-    );
+    // A resumed claim keeps `wip` on its marker, so a daemon death mid-run still finds the preserved work (`reconcileOrphans` keeps the whole marker).
+    const claimBody: WatchMarker = { pr: prCarry, revision: revisionCarry, worktree: worktreePath, branch, attempt: 0, ...(routed ? { chain: routed } : {}), ...(resumed && resumeWip ? { wip: resumeWip } : {}) };
+    if (deps.resume) {
+      claimMarker = claimBody;
+      try {
+        startSha = deps.git.rev(startPoint);
+      } catch {
+        startSha = undefined;
+      }
+    }
+    await pre("writing the claim marker", () => deps.provider.writeMarker(issue, claimBody));
 
     progress.step = "running the chain";
     progress.started = true;
     clearReleases(deps, "issue", issue);
+    // Only a resumed run says so. Phases are offered only to the SAME chain that wrote them.
+    const resumeOpt =
+      resumed && resumeWip
+        ? { resume: deps.resume?.atFailedPhase && resumeWip.phases && resumeWip.chain === deps.chain ? { phases: resumeWip.phases } : {} }
+        : {};
     const result = await deps.runChain(
       routed
-        ? { prompt, cwd: worktreePath, adwId, chainOptions: deps.chainOptions, chain: routed, links: { issue: issueLink(issue) } }
-        : { prompt, cwd: worktreePath, adwId, chainOptions: deps.chainOptions, links: { issue: issueLink(issue) } },
+        ? { prompt, cwd: worktreePath, adwId, chainOptions: deps.chainOptions, chain: routed, links: { issue: issueLink(issue) }, ...resumeOpt }
+        : { prompt, cwd: worktreePath, adwId, chainOptions: deps.chainOptions, links: { issue: issueLink(issue) }, ...resumeOpt },
     );
 
     // #6: the builder asked a question instead of guessing (gates.buildWellFormed
@@ -3012,6 +3155,7 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
       // Before the worktree is removed: push whatever the failed run left
       // (see `preserveWork`) and name the branch in the blocked comment.
       const wip = await preserveWork(deps, { worktreePath, branch, base: diffBase, issue, adwId });
+      await recordWip(deps, issue, claimMarker, wip, { adwId, chain: deps.chain, baseSha: startSha, phases: result.phaseRange });
       const detail =
         (result.detail || `Chain "${deps.chain}" (adw_id ${adwId}) did not complete successfully. Run \`piquette phases ${adwId}\` for detail.`) + wipNote(wip);
       deps.notify({
@@ -3060,6 +3204,7 @@ async function runIssueSingle(deps: WatchDeps, issue: Issue, opts: { revision?: 
     // be read to rule one out): that unreviewed tree is not committed or pushed.
     const withheld = error instanceof SignoffRequiredError && error.withholdsWip;
     const wip = worktreeCreated && !withheld ? await preserveWork(deps, { worktreePath, branch, base: wipBase, issue, adwId }) : null;
+    await recordWip(deps, issue, claimMarker, wip, { adwId, chain: deps.chain, baseSha: startSha });
     await deps.provider.transition(issue, "blocked", `piquette watch error while ${progress.step}: ${failureText(error)}${withheld ? WIP_WITHHELD_NOTE : wipNote(wip)}`).catch(() => undefined);
     cleanupWorktree(deps, { worktree: worktreePath, branch });
   }

@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import * as agents from "../../core/agents.ts";
 import { configOrigins } from "../../core/config_origins.ts";
+import { envSource, machineEnvStatus } from "../../core/env_layers.ts";
 import * as paths from "../../core/paths.ts";
 import * as permissions from "../../core/permissions.ts";
 import * as agentCc from "../../core/agent_cc.ts";
@@ -124,6 +125,13 @@ function checkChainRequirements(report: Report, label: string, chain: ChainDefin
         ? `suite(s) name unknown check(s): ${missingChecks.join(", ")}`
         : suiteNames.join(", ") || "(none)",
   );
+}
+
+/** `NAME (shell|repo .env|machine env <path>|config env|environment)`: where a credential came from — never its value. */
+function describeKeySource(key: string): string {
+  const source = envSource(key);
+  if (source === "machine env") return `${key} (machine env ${machineEnvStatus()?.path ?? ""})`.replace(" )", ")");
+  return `${key} (${source ?? "environment"})`;
 }
 
 function check(report: Report, name: string, ok: boolean, detail: string, severity?: "info" | "warn"): void {
@@ -326,6 +334,21 @@ export async function doctorCommand(argv: string[]): Promise<number> {
 
   const resolution = paths.resolveConfigPaths(anchor, options["config"]);
   check(report, "config resolution", true, `config layers: ${resolution.layers.map((l) => `${l.kind} ${l.path}`).join(" -> ")}`);
+  const machineEnv = machineEnvStatus();
+  if (machineEnv) {
+    if (machineEnv.refused) {
+      check(report, "machine env", false, `${machineEnv.path} NOT loaded: ${machineEnv.refused}`);
+    } else if (machineEnv.exists) {
+      check(report, "machine env", true, `${machineEnv.path}: ${machineEnv.loaded.length} key(s) loaded (${machineEnv.loaded.join(", ") || "none"})`);
+      if (machineEnv.modeWarning) check(report, "machine env permissions", true, `${machineEnv.path} is ${machineEnv.modeWarning}`, "warn");
+      if (machineEnv.ignoredProtected.length > 0) {
+        check(report, "machine env protected keys", true, `ignored ${machineEnv.ignoredProtected.join(", ")} — they locate the machine layer and cannot be set from an env file`, "warn");
+      }
+      if (machineEnv.ignoredLines > 0) check(report, "machine env ignored lines", true, `${machineEnv.ignoredLines} line(s) in ${machineEnv.path} were not KEY=value and were ignored`, "info");
+    } else {
+      check(report, "machine env", true, `${machineEnv.path} (none — optional; put credentials shared by every repo on this machine here, chmod 600)`);
+    }
+  }
   const configHome = process.env["PIQUETTE_CONFIG_HOME"];
   if (!options["config"] && configHome && !resolution.layers.some((l) => l.kind === "machine")) {
     check(report, "machine config", true, `PIQUETTE_CONFIG_HOME=${configHome} has no piquette.config.yaml`, "warn");
@@ -398,7 +421,7 @@ export async function doctorCommand(argv: string[]): Promise<number> {
       "D1 trace db credentials",
       true, // informational/warning only — same never-a-hard-failure contract as the Cloudflare Workers AI endpoint check above
       missingEnv.length === 0
-        ? `${account_id_env} and ${api_token_env} are set`
+        ? `${describeKeySource(account_id_env)} and ${describeKeySource(api_token_env)} are set`
         : `${missingEnv.join(", ")} not set — required for observability.db kind: "d1"`,
       missingEnv.length === 0 ? undefined : "warn",
     );
@@ -450,7 +473,7 @@ export async function doctorCommand(argv: string[]): Promise<number> {
         "receipt store credentials",
         true, // informational/warning only — same contract as the D1 credentials check above
         missingEnv.length === 0
-          ? `${store.access_key_id_env} and ${store.secret_access_key_env} are set`
+          ? `${describeKeySource(store.access_key_id_env)} and ${describeKeySource(store.secret_access_key_env)} are set`
           : `${missingEnv.join(", ")} not set — required for receipts.store kind: "s3"`,
         missingEnv.length === 0 ? undefined : "warn",
       );
@@ -534,7 +557,7 @@ export async function doctorCommand(argv: string[]): Promise<number> {
       report,
       "sync credentials",
       true,
-      unset.length === 0 ? `${sync.client_id_env} and ${sync.client_secret_env} are set` : `${unset.join(", ")} not set — \`piquette sync\` reads the Cloudflare Access service token from the environment`,
+      unset.length === 0 ? `${describeKeySource(sync.client_id_env)} and ${describeKeySource(sync.client_secret_env)} are set` : `${unset.join(", ")} not set — \`piquette sync\` reads the Cloudflare Access service token from the environment`,
       unset.length === 0 ? undefined : "warn",
     );
     const denied = new Set([sync.client_id_env, sync.client_secret_env]);
@@ -1799,6 +1822,25 @@ export async function doctorCommand(argv: string[]): Promise<number> {
               "warn",
             );
           }
+        }
+      }
+    }
+
+    // #14 — opt-in resume from a failed run's preserved work. Silent while off (the default).
+    if (cfg.watch.resume_from_wip || cfg.watch.resume_at_failed_phase) {
+      if (cfg.watch.resume_at_failed_phase && !cfg.watch.resume_from_wip) {
+        check(report, "watch.resume_at_failed_phase", false, "set without watch.resume_from_wip: true — phase resume rides on resume-from-WIP, and `piquette watch` refuses to start like this");
+      } else {
+        check(
+          report,
+          "watch.resume_from_wip",
+          true,
+          "on — a re-claimed issue starts from its failed run's preserved work (merged with the latest base) instead of origin/<base>; falls back to a fresh start on any doubt" +
+            (cfg.watch.resume_at_failed_phase ? "; resume_at_failed_phase also skips leading phases still on record in the local trace db" : ""),
+          "info",
+        );
+        if (cfg.watch.fanout.n > 1) {
+          check(report, "watch.resume_from_wip fanout", true, `has no effect while watch.fanout.n is ${cfg.watch.fanout.n} — resume applies to single dispatch only (preserved branches still get unique names)`, "warn");
         }
       }
     }

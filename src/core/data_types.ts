@@ -1651,6 +1651,26 @@ export const WatchConfigSchema = v.object({
    * override config's list replaces the base's rather than unioning with it.
    */
   allowed_authors: v.optional(v.array(v.string()), () => []),
+  /**
+   * Opt-in (#14): when a build-lane run fails and its work was preserved, the
+   * next claim of the SAME issue starts from that preserved work (merged with
+   * the latest base) instead of from `origin/<base>`, and tells the agent what
+   * the previous attempt got to. Any doubt (ref gone, base moved and conflicted,
+   * a protected path in the diff, a forged marker) falls back to today's fresh
+   * start. While on, preserved branches are named `<branch>-wip-<sha>` and are
+   * never overwritten, so a second failure cannot destroy the first's work.
+   * Single dispatch only: with `fanout.n > 1` it has no effect. Off (the
+   * default): byte-identical to before this field existed.
+   */
+  resume_from_wip: v.optional(v.boolean(), false),
+  /**
+   * Opt-in, best effort (#14), needs `resume_from_wip`: also skip the leading
+   * read-only phases (request, plan, build, ...) of the failed run whose outputs
+   * are still in the local trace database, re-running everything from the first
+   * phase that has no usable record. Gates, verification and commit always
+   * re-run. Any doubt means a full run on the resumed work.
+   */
+  resume_at_failed_phase: v.optional(v.boolean(), false),
   jira: v.optional(WatchJiraConfigSchema, () => v.parse(WatchJiraConfigSchema, {})),
   github: v.optional(WatchGithubConfigSchema, () => v.parse(WatchGithubConfigSchema, {})),
   github_projects: v.optional(WatchGithubProjectsConfigSchema, () => v.parse(WatchGithubProjectsConfigSchema, {})),

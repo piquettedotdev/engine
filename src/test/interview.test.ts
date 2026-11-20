@@ -541,6 +541,40 @@ test("watch(jira): the refine-lane question is now reachable on Jira too, not ju
   assert.equal(config.watch.refine.chain, "refine");
 });
 
+test("watch: resume_from_wip and resume_at_failed_phase are asked, opt-in, and written only when answered yes", async () => {
+  const run = async (confirmAnswers: Record<string, boolean>) => {
+    const ctx = gatherContext(dir, new Map());
+    const asker = createFakeAsker({
+      select: { "backend runs": "claude_code", "Model (Claude": "sonnet", Authentication: "login", "Issue tracker": "github", "Code host": "github", "Chain to run": "plan-build-test" },
+      text: { "Repo (owner/name)": "acme/widgets" },
+      confirm: {
+        'Add a "typecheck"': false,
+        'Add a "lint"': false,
+        'Add a "build"': false,
+        'Add a "test"': false,
+        "Enable piquette watch": true,
+        "Also enable the refine lane": false,
+        "Configure advanced": false,
+        "Write .piquette": true,
+        ...confirmAnswers,
+      },
+      secret: { GITHUB_TOKEN: "ghp_x" },
+    });
+    const result = await runInterview(asker, ctx);
+    assert.ok(result);
+    return (result!.config as any).watch;
+  };
+  const off = await run({ "Resume a blocked issue": false });
+  assert.equal(off.resume_from_wip, undefined);
+  assert.equal(off.resume_at_failed_phase, undefined);
+  const fromWip = await run({ "Resume a blocked issue": true, "Also skip the phases": false });
+  assert.equal(fromWip.resume_from_wip, true);
+  assert.equal(fromWip.resume_at_failed_phase, undefined);
+  const both = await run({ "Resume a blocked issue": true, "Also skip the phases": true });
+  assert.equal(both.resume_from_wip, true);
+  assert.equal(both.resume_at_failed_phase, true);
+});
+
 test("watch(github-projects): writes watch.github_projects with project_number and the five required Status options, and collects GITHUB_TOKEN", async () => {
   const ctx = gatherContext(dir, new Map());
   const asker = createFakeAsker({

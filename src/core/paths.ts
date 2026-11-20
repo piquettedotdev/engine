@@ -81,8 +81,17 @@ export interface ConfigResolution {
  * where receipts are hosted, whatever repo a run happens in.
  */
 export function machineConfigPath(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
-  const dir = env["PIQUETTE_CONFIG_HOME"] || path.join(home, ".piquette");
-  return path.resolve(dir, "piquette.config.yaml");
+  return path.join(machineConfigDir(env, home), "piquette.config.yaml");
+}
+
+/** The machine config home: `$PIQUETTE_CONFIG_HOME` (empty counts as unset), default `~/.piquette`. One definition for config, identity and env. */
+export function machineConfigDir(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
+  return path.resolve(env["PIQUETTE_CONFIG_HOME"] || path.join(home, ".piquette"));
+}
+
+/** The machine-level env file, `<machine dir>/env`: credentials that apply to every repo on this machine (see `core/env_layers.ts`). */
+export function machineEnvPath(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
+  return path.join(machineConfigDir(env, home), "env");
 }
 
 function sameFile(a: string, b: string): boolean {

@@ -97,6 +97,7 @@ function fakeGit(calls: GitCalls, overrides: Partial<GitHandle> = {}): GitHandle
     worktreeAdd: (worktreePath, branch, startPoint) => void calls.adds.push({ path: worktreePath, branch, startPoint }),
     worktreeRemove: (worktreePath) => void calls.removes.push(worktreePath),
     branchAt: () => {},
+    merge: () => true,
     deleteLocalBranch: (name) => void calls.deletedBranches.push(name),
     push: () => {},
     ...overrides,

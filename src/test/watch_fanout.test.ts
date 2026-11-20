@@ -188,6 +188,7 @@ function sharedGit(state: GitState, boundPath: string | undefined, overrides: Pa
       state.worktrees.delete(worktreePath);
     },
     branchAt: () => {},
+    merge: () => true,
     deleteLocalBranch: (name) => {
       const stillCheckedOut = [...state.worktrees.values()].includes(name);
       if (stillCheckedOut) {

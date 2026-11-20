@@ -213,6 +213,13 @@ export interface GitHandle {
   /** True when `ancestor` is an ancestor of (or equal to) `ref` (default HEAD). Never throws — this is a question. */
   isAncestor(ancestor: string, ref?: string): boolean;
   /**
+   * `git merge --no-edit --no-ff <ref>` into the checked-out branch. Returns
+   * true on a clean merge. On a conflict (or any other failure — a hook, a
+   * dirty tree) it runs `git merge --abort`, leaving the tree as it was, and
+   * returns false. Never throws.
+   */
+  merge(ref: string): boolean;
+  /**
    * Pushes the worktree's actual HEAD commit to `refs/heads/<opts.remoteBranch ?? branch>`
    * on `remote` (`git push <remote> HEAD:refs/heads/<name>`). `branch` is the
    * EXPECTED branch name, not a local ref to resolve: a coding agent that ran
@@ -339,6 +346,16 @@ export function makeGit(repoRoot: string): GitHandle {
 
     branchAt: (name, ref = "HEAD") => {
       run(["branch", "--force", name, ref]);
+    },
+
+    merge: (ref) => {
+      // `-c` identity only as a fallback, like `permissions.restoreCommitted`, so a bare CI checkout can still merge.
+      const hasIdent = spawnSync("git", ["config", "user.email"], { cwd: repoRoot, encoding: "utf-8" }).stdout.trim() !== "";
+      const ident = hasIdent ? [] : ["-c", "user.name=piquette", "-c", "user.email=piquette@localhost"];
+      const result = spawnSync("git", [...ident, "merge", "--no-edit", "--no-ff", ref], { cwd: repoRoot, encoding: "utf-8" });
+      if (result.status === 0) return true;
+      spawnSync("git", ["merge", "--abort"], { cwd: repoRoot, encoding: "utf-8" });
+      return false;
     },
 
     deleteLocalBranch: (name) => {
